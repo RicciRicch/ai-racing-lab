@@ -1,0 +1,16 @@
+MODEL EVALUATION SUMMARY
+
+Model: best_brain_continuous.npz
+
+Episodes: 10
+Average laps: 10.00
+Best laps: 10
+Worst laps: 10
+Average checkpoints: 41.80
+Average frames: 1800.00
+Average normalized speed: 0.985
+Crash count: 0/10
+Crash rate: 0.0%
+
+Conclusion:
+The single-track continuous-control model is highly stable on the original training track and robust to small perturbations in the initial state.

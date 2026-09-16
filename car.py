@@ -1,4 +1,5 @@
 import math
+
 import pygame
 
 from brain import Brain
@@ -13,19 +14,25 @@ class Car:
         self.x = x
         self.y = y
 
+        # -90 degrees = facing right
         self.angle = -90
 
         # ==================================================
-        # MOVEMENT
+        # PHYSICS
         # ==================================================
 
         self.velocity = 0
 
-        self.acceleration = 0.12
-        self.max_speed = 5.5
+        self.acceleration = 0.18
 
-        self.friction = 0.03
-        self.rotation_speed = 2.5
+        # Higher than before.
+        # Agent now has to learn when full speed
+        # is safe.
+        self.max_speed = 8.0
+
+        self.friction = 0.035
+
+        self.rotation_speed = 3.0
 
         # ==================================================
         # SIZE
@@ -51,7 +58,16 @@ class Car:
         # ==================================================
 
         self.frames_alive = 0
+
         self.fitness = 0
+
+        # Sum of normalized speeds.
+        self.speed_reward = 0
+
+        # Last neural-network outputs,
+        # useful for visualization/debugging.
+        self.last_steering = 0
+        self.last_throttle = 0
 
         # ==================================================
         # CHECKPOINTS
@@ -95,12 +111,14 @@ class Car:
             in sensors
         ]
 
+        # Sensor values -> [0, 1]
         sensor_values = [
             distance / 220
             for distance
             in distances
         ]
 
+        # Speed -> [0, 1]
         speed_value = (
             self.velocity
             / self.max_speed
@@ -111,44 +129,67 @@ class Car:
             + [speed_value]
         )
 
-        action = (
+        steering, throttle = (
             self.brain.predict(
                 inputs
             )
         )
 
-        # Constant throttle
-
-        self.velocity += (
-            self.acceleration
+        self.last_steering = (
+            steering
         )
 
-        if (
-            self.velocity
-            > self.max_speed
-        ):
-            self.velocity = (
+        self.last_throttle = (
+            throttle
+        )
+
+        # ------------------------------------------
+        # THROTTLE
+        # ------------------------------------------
+
+        self.velocity += (
+            throttle
+            * self.acceleration
+        )
+
+        # Natural friction means the agent
+        # can slow down by reducing throttle.
+        self.velocity -= (
+            self.friction
+        )
+
+        self.velocity = max(
+            0,
+            min(
+                self.velocity,
                 self.max_speed
             )
+        )
 
-        # Steering
+        # ------------------------------------------
+        # STEERING
+        # ------------------------------------------
 
-        if action == 0:
+        if self.velocity > 0.05:
             self.angle += (
-                self.rotation_speed
+                steering
+                * self.rotation_speed
             )
 
-        elif action == 1:
-            pass
-
-        elif action == 2:
-            self.angle -= (
-                self.rotation_speed
-            )
+        # ------------------------------------------
+        # MOVEMENT
+        # ------------------------------------------
 
         self.move()
 
         self.frames_alive += 1
+
+        # A small measurement of how quickly
+        # the agent is moving.
+        self.speed_reward += (
+            self.velocity
+            / self.max_speed
+        )
 
     # ==================================================
     # MOVE
@@ -402,6 +443,9 @@ class Car:
         self,
         screen
     ):
+        # left_far, left, front,
+        # right, right_far
+
         angles = [
             70,
             35,
@@ -430,10 +474,8 @@ class Car:
         self,
         screen
     ):
-        sensors = (
-            self.get_sensors(
-                screen
-            )
+        sensors = self.get_sensors(
+            screen
         )
 
         for (
@@ -496,7 +538,6 @@ class Car:
 
                 self.current_checkpoint += 1
 
-                # Completed all checkpoints
                 if (
                     self.current_checkpoint
                     >= len(checkpoints)
@@ -505,8 +546,9 @@ class Car:
 
                     self.laps_completed += 1
 
-                # New target
-                self.previous_checkpoint_distance = None
+                self.previous_checkpoint_distance = (
+                    None
+                )
 
         else:
             self.checkpoint_locked = False
@@ -525,13 +567,8 @@ class Car:
             ]
         )
 
-        target_x = (
-            checkpoint.centerx
-        )
-
-        target_y = (
-            checkpoint.centery
-        )
+        target_x = checkpoint.centerx
+        target_y = checkpoint.centery
 
         distance = math.hypot(
             target_x - self.x,
@@ -554,4 +591,3 @@ class Car:
         self.previous_checkpoint_distance = (
             distance
         )
-    

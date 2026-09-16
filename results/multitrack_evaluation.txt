@@ -1,0 +1,34 @@
+MULTI-TRACK MODEL EVALUATION SUMMARY
+
+Model: best_brain_multitrack.npz
+
+Tracks evaluated: 3
+Total episodes: 30
+
+Average laps per episode: 3.07
+Average checkpoints per episode: 14.23
+Average normalized speed: 0.985
+Average throttle: 0.996
+Average |steering|: 0.574
+
+Total crashes: 0/30
+Overall crash rate: 0.0%
+
+PER-TRACK RESULTS
+
+Classic Oval
+Average laps: 0.00
+Crash rate: 0.0%
+
+Tall Oval
+Average laps: 9.00
+Crash rate: 0.0%
+
+Asymmetric Oval
+Average laps: 0.20
+Crash rate: 0.0%
+
+Conclusion:
+The multi-track model is stable and avoids crashes across all three training environments, but performance remains highly imbalanced between tracks.
+
+The model performs strongly on Tall Oval while failing to complete full laps consistently on Classic Oval and Asymmetric Oval.

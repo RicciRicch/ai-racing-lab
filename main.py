@@ -1,11 +1,15 @@
+import csv
 import os
 import random
+import statistics
 import time
 
 import pygame
 
-from car import Car
 from brain import Brain
+from car import Car
+
+from tracks import TRAINING_TRACKS
 
 
 # ==================================================
@@ -21,18 +25,40 @@ POPULATION_SIZE = 40
 
 PARENT_COUNT = 5
 ELITE_COUNT = 2
-RANDOM_AGENT_COUNT = 4
 
-MAX_FRAMES_PER_GENERATION = 1800
+MAX_FRAMES_PER_TRACK = 1800
 
-START_X = 500
-START_Y = 590
-START_ANGLE = -90
 
-MODEL_FILE = "best_brain.npz"
+# ==================================================
+# FILES
+# ==================================================
+
+# New model trained across multiple tracks
+MODEL_FILE = "best_brain_multitrack.npz"
+
+# Existing single-track continuous model.
+# We can use it to initialize training.
+SEED_MODEL_FILE = "best_brain_continuous.npz"
+
+HISTORY_FILE = "training_history_multitrack.csv"
+
+
+# ==================================================
+# MODES
+# ==================================================
 
 MODE_TRAIN = "TRAIN"
 MODE_DEMO = "DEMO"
+
+
+# ==================================================
+# ADAPTIVE EVOLUTION
+# ==================================================
+
+STAGNATION_LEVEL_1 = 8
+STAGNATION_LEVEL_2 = 18
+
+MIN_IMPROVEMENT = 1.0
 
 
 # ==================================================
@@ -41,542 +67,622 @@ MODE_DEMO = "DEMO"
 
 pygame.init()
 
-screen = pygame.display.set_mode(
-    (WIDTH, HEIGHT)
-)
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
 
-pygame.display.set_caption(
-    "AI Racing Lab"
-)
+pygame.display.set_caption("AI Racing Lab - Multi-Track Training")
 
 clock = pygame.time.Clock()
 
-font = pygame.font.SysFont(
-    "Arial",
-    24
-)
+font = pygame.font.SysFont("Arial", 24)
 
-small_font = pygame.font.SysFont(
-    "Arial",
-    18
-)
+small_font = pygame.font.SysFont("Arial", 18)
 
 
 # ==================================================
-# CHECKPOINTS
+# CANDIDATE
 # ==================================================
 
-checkpoints = [
-    pygame.Rect(
-        470,
-        520,
-        60,
-        20
-    ),
 
-    pygame.Rect(
-        760,
-        320,
-        20,
-        60
-    ),
+class Candidate:
+    """
+    One neural network being evaluated.
 
-    pygame.Rect(
-        470,
-        150,
-        60,
-        20
-    ),
+    The same brain is tested on every
+    training track during the generation.
+    """
 
-    pygame.Rect(
-        220,
-        320,
-        20,
-        60
-    ),
-]
+    def __init__(self, brain=None):
+        if brain is None:
+            self.brain = Brain()
+
+        else:
+            self.brain = brain
+
+        self.track_scores = []
+
+        self.track_laps = []
+
+        self.track_checkpoints = []
+
+        self.track_crashes = []
+
+    @property
+    def fitness(self):
+        if not self.track_scores:
+            return 0
+
+        return min(
+            self.track_scores
+        )
+
+    @property
+    def mean_track_score(self):
+        if not self.track_scores:
+            return 0
+
+        return statistics.mean(self.track_scores)
+
+    @property
+    def worst_track_score(self):
+        if not self.track_scores:
+            return 0
+
+        return min(self.track_scores)
+
+    @property
+    def total_laps(self):
+        return sum(self.track_laps)
+
+    @property
+    def total_checkpoints(self):
+        return sum(self.track_checkpoints)
 
 
 # ==================================================
-# GLOBAL STATE
+# GLOBAL TRAINING STATE
 # ==================================================
 
 mode = MODE_TRAIN
 
 generation = 1
-generation_frame = 0
+
+current_track_index = 0
+
+track_frame = 0
+
+generations_without_improvement = 0
 
 best_fitness_ever = float("-inf")
-best_checkpoints_ever = 0
-best_laps_ever = 0
 
 best_brain_ever = None
 
+
+# Current population of neural networks
+candidates = []
+
+# Cars currently evaluating those brains
 cars = []
+
+
+# ==================================================
+# DEMO STATE
+# ==================================================
 
 demo_car = None
 
+demo_track_index = 0
+
 demo_lap_start_time = None
+
 demo_best_lap = None
+
 demo_previous_laps = 0
 
 
 # ==================================================
-# CREATE CAR
+# TRAINING HISTORY
 # ==================================================
 
-def create_car(brain=None):
-    car = Car(
-        START_X,
-        START_Y
-    )
 
-    car.angle = START_ANGLE
+def initialize_history_file():
 
-    if brain is not None:
-        car.brain = brain
+    if os.path.exists(HISTORY_FILE):
+        return
 
-    return car
+    with open(HISTORY_FILE, "w", newline="") as file:
+        writer = csv.writer(file)
 
-
-# ==================================================
-# TRAINING POPULATION
-# ==================================================
-
-def create_initial_population():
-    population = []
-
-    if os.path.exists(
-        MODEL_FILE
-    ):
-        print(
-            f"Loading saved model: "
-            f"{MODEL_FILE}"
+        writer.writerow(
+            [
+                "generation",
+                "generalization_fitness",
+                "mean_track_score",
+                "worst_track_score",
+                "population_average_fitness",
+                "track_1_score",
+                "track_2_score",
+                "track_3_score",
+                "total_laps",
+                "total_checkpoints",
+                "stagnation",
+                "mutation_mode",
+            ]
         )
 
-        saved_brain = Brain.load(
-            MODEL_FILE
+
+def save_generation_stats(champion, average_fitness, mutation_mode):
+    scores = champion.track_scores + [0, 0, 0]
+
+    with open(HISTORY_FILE, "a", newline="") as file:
+        writer = csv.writer(file)
+
+        writer.writerow(
+            [
+                generation,
+                champion.fitness,
+                champion.mean_track_score,
+                champion.worst_track_score,
+                average_fitness,
+                scores[0],
+                scores[1],
+                scores[2],
+                champion.total_laps,
+                champion.total_checkpoints,
+                generations_without_improvement,
+                mutation_mode,
+            ]
         )
 
-        # Exact champion
-        population.append(
-            create_car(
-                saved_brain.copy()
-            )
-        )
 
-        # Mutations of champion
-        while (
-            len(population)
-            < POPULATION_SIZE
-        ):
-            new_brain = (
-                saved_brain.copy()
-            )
-
-            mutation_rate = (
-                random.choice(
-                    [
-                        0.05,
-                        0.10,
-                        0.15,
-                        0.25
-                    ]
-                )
-            )
-
-            new_brain.mutate(
-                mutation_rate
-            )
-
-            population.append(
-                create_car(
-                    new_brain
-                )
-            )
-
-        return population
-
-    # No model yet
-    return [
-        create_car()
-        for _ in range(
-            POPULATION_SIZE
-        )
-    ]
-
-
-# ==================================================
-# TRACK
-# ==================================================
-
-def draw_track():
-    # Grass
-    screen.fill(
-        (40, 130, 60)
-    )
-
-    # Road
-    pygame.draw.ellipse(
-        screen,
-        (70, 70, 70),
-        (
-            100,
-            70,
-            800,
-            560
-        )
-    )
-
-    # Inner grass
-    pygame.draw.ellipse(
-        screen,
-        (40, 130, 60),
-        (
-            280,
-            200,
-            440,
-            300
-        )
-    )
-
-
-# ==================================================
-# CHECKPOINT VISUALIZATION
-# ==================================================
-
-def draw_checkpoints():
-    for checkpoint in checkpoints:
-        pygame.draw.rect(
-            screen,
-            (0, 200, 255),
-            checkpoint,
-            2
-        )
+initialize_history_file()
 
 
 # ==================================================
 # FITNESS
 # ==================================================
 
-def calculate_fitness(car):
-    checkpoint_reward = (
-        car.checkpoints_passed
-        * 1000
-    )
 
-    progress_reward = (
-        car.progress_reward
-        * 0.5
-    )
+def calculate_track_fitness(car):
+    checkpoint_reward = car.checkpoints_passed * 1000
 
-    survival_reward = (
-        car.frames_alive
-        * 0.01
-    )
+    progress_reward = car.progress_reward * 0.5
 
-    car.fitness = (
+    speed_reward = car.speed_reward * 0.05
+
+    survival_reward = car.frames_alive * 0.01
+
+    crash_penalty = 0
+
+    if not car.alive:
+        crash_penalty = 100
+
+    return (
         checkpoint_reward
         + progress_reward
+        + speed_reward
         + survival_reward
+        - crash_penalty
     )
+
+
+# ==================================================
+# CREATE CAR FOR TRACK
+# ==================================================
+
+
+def create_track_car(brain, track, x_offset, y_offset, angle_offset):
+    car = Car(track.start_x + x_offset, track.start_y + y_offset)
+
+    car.angle = track.start_angle + angle_offset
+
+    car.brain = brain.copy()
+
+    return car
+
+
+# ==================================================
+# CREATE POPULATION
+# ==================================================
+
+
+def create_initial_population():
+    population = []
+
+    # ----------------------------------------------
+    # Existing multi-track model
+    # ----------------------------------------------
+
+    if os.path.exists(MODEL_FILE):
+        print(f"Loading multi-track model: {MODEL_FILE}")
+
+        seed_brain = Brain.load(MODEL_FILE)
+
+    # ----------------------------------------------
+    # Transfer learning from our previous model
+    # ----------------------------------------------
+
+    elif os.path.exists(SEED_MODEL_FILE):
+        print("No multi-track model found.")
+
+        print("Using previous continuous model as training seed:")
+
+        print(SEED_MODEL_FILE)
+
+        seed_brain = Brain.load(SEED_MODEL_FILE)
+
+    # ----------------------------------------------
+    # Fully random
+    # ----------------------------------------------
+
+    else:
+        print("No trained seed found.")
+
+        print("Starting completely random.")
+
+        return [Candidate() for _ in range(POPULATION_SIZE)]
+
+    # ----------------------------------------------
+    # Exact seed
+    # ----------------------------------------------
+
+    population.append(Candidate(seed_brain.copy()))
+
+    # ----------------------------------------------
+    # Mutated seed population
+    # ----------------------------------------------
+
+    while len(population) < POPULATION_SIZE:
+        brain = seed_brain.copy()
+
+        brain.mutate(random.choice([0.01, 0.03, 0.05, 0.10, 0.15]))
+
+        population.append(Candidate(brain))
+
+    return population
+
+
+# ==================================================
+# COMMON PERTURBATION
+# ==================================================
+
+
+def generate_start_perturbation():
+    """
+    Every agent on this track gets the SAME
+    perturbation.
+
+    This preserves fair comparison between
+    neural networks while still forcing
+    robustness across generations.
+    """
+
+    return (random.uniform(-8, 8), random.uniform(-4, 4), random.uniform(-4, 4))
+
+
+# ==================================================
+# START TRACK EVALUATION
+# ==================================================
+
+
+def start_track_evaluation():
+    global cars
+    global track_frame
+
+    track = TRAINING_TRACKS[current_track_index]
+
+    (x_offset, y_offset, angle_offset) = generate_start_perturbation()
+
+    cars = []
+
+    for candidate in candidates:
+        car = create_track_car(candidate.brain, track, x_offset, y_offset, angle_offset)
+
+        cars.append(car)
+
+    track_frame = 0
+
+    print()
+    print(
+        f"Generation {generation} | "
+        f"Track "
+        f"{current_track_index + 1}"
+        f"/{len(TRAINING_TRACKS)}"
+        f" | {track.name}"
+    )
+
+
+# ==================================================
+# ADAPTIVE EVOLUTION
+# ==================================================
+
+
+def get_evolution_settings():
+
+    if generations_without_improvement < STAGNATION_LEVEL_1:
+        return ("FINE", 0.01, 0.03, 0.08, 2)
+
+    if generations_without_improvement < STAGNATION_LEVEL_2:
+        return ("EXPLORE", 0.03, 0.08, 0.20, 5)
+
+    return ("ESCAPE", 0.05, 0.15, 0.35, 10)
 
 
 # ==================================================
 # CREATE CHILD
 # ==================================================
 
-def create_child(
-    parents,
-    mutation_rate
-):
-    parent_a = random.choice(
-        parents
-    )
 
-    parent_b = random.choice(
-        parents
-    )
+def create_child(parents, mutation_rate):
+    parent_a = random.choice(parents)
 
-    child_brain = (
-        Brain.crossover(
-            parent_a.brain,
-            parent_b.brain
-        )
-    )
+    parent_b = random.choice(parents)
 
-    child_brain.mutate(
-        mutation_rate
-    )
+    child_brain = Brain.crossover(parent_a.brain, parent_b.brain)
 
-    return create_car(
-        child_brain
-    )
+    child_brain.mutate(mutation_rate)
+
+    return Candidate(child_brain)
 
 
 # ==================================================
-# NEXT GENERATION
+# FINISH CURRENT TRACK
 # ==================================================
 
-def next_generation():
-    global cars
+
+def finish_current_track():
+    global current_track_index
+
+    track = TRAINING_TRACKS[current_track_index]
+
+    # ----------------------------------------------
+    # Save score of every candidate
+    # ----------------------------------------------
+
+    for candidate, car in zip(candidates, cars):
+        score = calculate_track_fitness(car)
+
+        candidate.track_scores.append(score)
+
+        candidate.track_laps.append(car.laps_completed)
+
+        candidate.track_checkpoints.append(car.checkpoints_passed)
+
+        candidate.track_crashes.append(not car.alive)
+
+    # ----------------------------------------------
+    # Track summary
+    # ----------------------------------------------
+
+    best_car = max(cars, key=calculate_track_fitness)
+
+    print(f"Finished {track.name}")
+
+    print(f"Best track score: {calculate_track_fitness(best_car):.2f}")
+
+    print(f"Best laps: {best_car.laps_completed}")
+
+    # ----------------------------------------------
+    # Next track
+    # ----------------------------------------------
+
+    current_track_index += 1
+
+    if current_track_index < len(TRAINING_TRACKS):
+        start_track_evaluation()
+
+    else:
+        finish_generation()
+
+
+# ==================================================
+# FINISH GENERATION
+# ==================================================
+
+
+def finish_generation():
+    global candidates
 
     global generation
-    global generation_frame
+    global current_track_index
 
     global best_fitness_ever
-    global best_checkpoints_ever
-    global best_laps_ever
-
     global best_brain_ever
 
-    # Final fitness
-    for car in cars:
-        calculate_fitness(
-            car
-        )
-
-    ranked_cars = sorted(
-        cars,
-        key=lambda car: car.fitness,
-        reverse=True
-    )
-
-    champion = ranked_cars[0]
-
-    average_fitness = (
-        sum(
-            car.fitness
-            for car in cars
-        )
-        / len(cars)
-    )
+    global generations_without_improvement
 
     # ----------------------------------------------
-    # RECORDS
+    # RANK BY MULTI-TRACK FITNESS
     # ----------------------------------------------
+
+    ranked = sorted(
+    candidates,
+    key=lambda candidate: (
+        candidate.worst_track_score,
+        candidate.mean_track_score
+    ),
+    reverse=True
+)
+
+    champion = ranked[0]
+
+    average_fitness = statistics.mean(candidate.fitness for candidate in candidates)
+
+    # ----------------------------------------------
+    # RECORD
+    # ----------------------------------------------
+
+    if best_fitness_ever == float("-inf"):
+        improvement = float("inf")
+
+    else:
+        improvement = champion.fitness - best_fitness_ever
 
     new_record = False
 
-    if (
-        champion.fitness
-        > best_fitness_ever
-    ):
-        best_fitness_ever = (
-            champion.fitness
-        )
+    if improvement > MIN_IMPROVEMENT:
+        best_fitness_ever = champion.fitness
 
-        best_brain_ever = (
-            champion.brain.copy()
-        )
+        best_brain_ever = champion.brain.copy()
 
-        best_brain_ever.save(
-            MODEL_FILE
-        )
+        best_brain_ever.save(MODEL_FILE)
+
+        generations_without_improvement = 0
 
         new_record = True
 
-    if (
-        champion.checkpoints_passed
-        > best_checkpoints_ever
-    ):
-        best_checkpoints_ever = (
-            champion.checkpoints_passed
-        )
-
-    if (
-        champion.laps_completed
-        > best_laps_ever
-    ):
-        best_laps_ever = (
-            champion.laps_completed
-        )
+    else:
+        generations_without_improvement += 1
 
     # ----------------------------------------------
-    # TERMINAL STATS
+    # EVOLUTION SETTINGS
+    # ----------------------------------------------
+
+    (
+        mutation_mode,
+        low_mutation,
+        medium_mutation,
+        high_mutation,
+        random_agent_count,
+    ) = get_evolution_settings()
+
+    # ----------------------------------------------
+    # SAVE HISTORY
+    # ----------------------------------------------
+
+    save_generation_stats(champion, average_fitness, mutation_mode)
+
+    # ----------------------------------------------
+    # PRINT GENERATION SUMMARY
     # ----------------------------------------------
 
     print()
+    print("=" * 70)
+
+    print(f"MULTI-TRACK GENERATION {generation}")
+
     print(
-        "=" * 60
+    f"Generalization fitness: "
+    f"{champion.fitness:.2f}"
     )
 
     print(
-        f"Generation {generation}"
+        "(fitness = worst-track performance)"
     )
 
     print(
-        f"Best fitness: "
-        f"{champion.fitness:.2f}"
+        f"Mean track score: "
+        f"{champion.mean_track_score:.2f}"
     )
 
     print(
-        f"Average fitness: "
-        f"{average_fitness:.2f}"
+        f"Worst track score: "
+        f"{champion.worst_track_score:.2f}"
     )
 
-    print(
-        f"Checkpoints: "
-        f"{champion.checkpoints_passed}"
-    )
+    print(f"Population average fitness: {average_fitness:.2f}")
 
     print(
-        f"Laps: "
-        f"{champion.laps_completed}"
+        f"Track scores: "
+        + " | ".join(f"{score:.1f}" for score in champion.track_scores)
     )
 
-    print(
-        f"Progress reward: "
-        f"{champion.progress_reward:.2f}"
-    )
+    print(f"Total laps across tracks: {champion.total_laps}")
 
-    print(
-        f"Frames alive: "
-        f"{champion.frames_alive}"
-    )
+    print(f"Total checkpoints: {champion.total_checkpoints}")
+
+    print(f"Crashes: {sum(champion.track_crashes)}/{len(TRAINING_TRACKS)}")
+
+    print(f"Stagnation: {generations_without_improvement}")
+
+    print(f"Evolution mode: {mutation_mode}")
 
     if new_record:
-        print(
-            f"NEW BEST MODEL SAVED -> "
-            f"{MODEL_FILE}"
-        )
+        print(f"NEW BEST MULTI-TRACK MODEL SAVED -> {MODEL_FILE}")
 
-    print(
-        "=" * 60
-    )
+    print("=" * 70)
 
     # ----------------------------------------------
-    # SELECT PARENTS
+    # PARENTS
     # ----------------------------------------------
 
-    parents = ranked_cars[
-        :PARENT_COUNT
-    ]
+    parents = ranked[:PARENT_COUNT]
 
     new_population = []
 
     # ----------------------------------------------
-    # ELITISM
+    # ELITES
     # ----------------------------------------------
 
-    for i in range(
-        ELITE_COUNT
-    ):
-        new_population.append(
-            create_car(
-                ranked_cars[i]
-                .brain
-                .copy()
-            )
-        )
+    for i in range(ELITE_COUNT):
+        new_population.append(Candidate(ranked[i].brain.copy()))
+
+    # ----------------------------------------------
+    # COUNTS
+    # ----------------------------------------------
+
+    remaining_slots = POPULATION_SIZE - ELITE_COUNT - random_agent_count
+
+    low_count = int(remaining_slots * 0.45)
+
+    medium_count = int(remaining_slots * 0.35)
+
+    high_count = remaining_slots - low_count - medium_count
 
     # ----------------------------------------------
     # LOW MUTATION
     # ----------------------------------------------
 
-    for _ in range(10):
-        new_population.append(
-            create_child(
-                parents,
-                0.05
-            )
-        )
+    for _ in range(low_count):
+        new_population.append(create_child(parents, low_mutation))
 
     # ----------------------------------------------
     # MEDIUM MUTATION
     # ----------------------------------------------
 
-    for _ in range(14):
-        new_population.append(
-            create_child(
-                parents,
-                0.15
-            )
-        )
+    for _ in range(medium_count):
+        new_population.append(create_child(parents, medium_mutation))
 
     # ----------------------------------------------
     # HIGH MUTATION
     # ----------------------------------------------
 
-    high_mutation_count = (
-        POPULATION_SIZE
-        - ELITE_COUNT
-        - 10
-        - 14
-        - RANDOM_AGENT_COUNT
-    )
-
-    for _ in range(
-        high_mutation_count
-    ):
-        new_population.append(
-            create_child(
-                parents,
-                0.30
-            )
-        )
+    for _ in range(high_count):
+        new_population.append(create_child(parents, high_mutation))
 
     # ----------------------------------------------
-    # RANDOM AGENTS
+    # RANDOM IMMIGRANTS
     # ----------------------------------------------
 
-    for _ in range(
-        RANDOM_AGENT_COUNT
-    ):
-        new_population.append(
-            create_car()
-        )
+    for _ in range(random_agent_count):
+        new_population.append(Candidate())
 
-    cars = new_population
+    # ----------------------------------------------
+    # NEXT GENERATION
+    # ----------------------------------------------
+
+    candidates = new_population
 
     generation += 1
-    generation_frame = 0
+
+    current_track_index = 0
+
+    start_track_evaluation()
 
 
 # ==================================================
-# RESET TRAINING
+# DRAW CHECKPOINTS
 # ==================================================
 
-def reset_training():
-    global cars
 
-    global generation
-    global generation_frame
-
-    global best_fitness_ever
-    global best_checkpoints_ever
-    global best_laps_ever
-
-    global best_brain_ever
-
-    generation = 1
-    generation_frame = 0
-
-    best_fitness_ever = float(
-        "-inf"
-    )
-
-    best_checkpoints_ever = 0
-    best_laps_ever = 0
-
-    best_brain_ever = None
-
-    cars = [
-        create_car()
-        for _ in range(
-            POPULATION_SIZE
-        )
-    ]
-
-    print(
-        "Training restarted "
-        "with random brains."
-    )
+def draw_checkpoints(track):
+    for checkpoint in track.checkpoints:
+        pygame.draw.rect(screen, (0, 200, 255), checkpoint, 2)
 
 
 # ==================================================
 # START DEMO
 # ==================================================
+
 
 def start_demo():
     global demo_car
@@ -585,113 +691,69 @@ def start_demo():
     global demo_best_lap
     global demo_previous_laps
 
-    if not os.path.exists(
-        MODEL_FILE
-    ):
-        print(
-            "Cannot start DEMO mode."
-        )
-
-        print(
-            f"{MODEL_FILE} does not exist yet."
-        )
+    if not os.path.exists(MODEL_FILE):
+        print("No multi-track model yet.")
 
         return False
 
-    brain = Brain.load(
-        MODEL_FILE
-    )
+    track = TRAINING_TRACKS[demo_track_index]
 
-    demo_car = create_car(
-        brain
-    )
+    brain = Brain.load(MODEL_FILE)
 
-    demo_lap_start_time = (
-        time.time()
-    )
+    demo_car = Car(track.start_x, track.start_y)
+
+    demo_car.angle = track.start_angle
+
+    demo_car.brain = brain
+
+    demo_lap_start_time = time.time()
 
     demo_best_lap = None
+
     demo_previous_laps = 0
-
-    print()
-    print(
-        "DEMO MODE"
-    )
-
-    print(
-        f"Loaded model: "
-        f"{MODEL_FILE}"
-    )
 
     return True
 
 
 # ==================================================
-# RESET DEMO CAR
+# NEXT DEMO TRACK
 # ==================================================
 
-def reset_demo_car():
-    global demo_car
 
-    global demo_lap_start_time
-    global demo_previous_laps
+def next_demo_track():
+    global demo_track_index
 
-    if not os.path.exists(
-        MODEL_FILE
-    ):
-        return
+    demo_track_index += 1
 
-    brain = Brain.load(
-        MODEL_FILE
-    )
+    if demo_track_index >= len(TRAINING_TRACKS):
+        demo_track_index = 0
 
-    demo_car = create_car(
-        brain
-    )
-
-    demo_lap_start_time = (
-        time.time()
-    )
-
-    demo_previous_laps = 0
+    start_demo()
 
 
 # ==================================================
-# CHANGE MODE
+# TOGGLE MODE
 # ==================================================
+
 
 def toggle_mode():
     global mode
-    global cars
 
     if mode == MODE_TRAIN:
-
-        success = start_demo()
-
-        if success:
+        if start_demo():
             mode = MODE_DEMO
 
     else:
         mode = MODE_TRAIN
 
-        # Start training from saved model
-        cars = (
-            create_initial_population()
-        )
-
-        print()
-        print(
-            "TRAIN MODE"
-        )
-
 
 # ==================================================
-# INITIALIZE TRAINING
+# INITIALIZATION
 # ==================================================
 
-cars = (
-    create_initial_population()
-)
+candidates = create_initial_population()
+
+start_track_evaluation()
 
 
 # ==================================================
@@ -701,593 +763,276 @@ cars = (
 running = True
 
 while running:
-
     # ----------------------------------------------
     # EVENTS
     # ----------------------------------------------
 
     for event in pygame.event.get():
-
         if event.type == pygame.QUIT:
             running = False
 
         if event.type == pygame.KEYDOWN:
-
-            # Switch TRAIN / DEMO
             if event.key == pygame.K_TAB:
                 toggle_mode()
 
-            # Reset
-            if event.key == pygame.K_r:
+            if mode == MODE_DEMO:
+                if event.key == pygame.K_n:
+                    next_demo_track()
 
-                if mode == MODE_TRAIN:
-                    reset_training()
-
-                elif mode == MODE_DEMO:
-                    reset_demo_car()
-
-    # ----------------------------------------------
-    # DRAW WORLD
-    # ----------------------------------------------
-
-    draw_track()
+                if event.key == pygame.K_r:
+                    start_demo()
 
     # ==================================================
     # TRAIN MODE
     # ==================================================
 
     if mode == MODE_TRAIN:
+        track = TRAINING_TRACKS[current_track_index]
 
-        generation_frame += 1
+        # ------------------------------------------
+        # DRAW TRACK
+        # ------------------------------------------
+
+        track.draw(screen)
+
+        track_frame += 1
 
         # ------------------------------------------
         # UPDATE CARS
         # ------------------------------------------
 
         for car in cars:
-
             if not car.alive:
                 continue
 
-            car.neural_control(
-                screen
-            )
+            car.neural_control(screen)
 
-            car.check_collision(
-                screen
-            )
+            car.check_collision(screen)
 
             if car.alive:
+                car.update_checkpoint(track.checkpoints)
 
-                car.update_checkpoint(
-                    checkpoints
-                )
-
-                car.update_progress_reward(
-                    checkpoints
-                )
-
-            calculate_fitness(
-                car
-            )
+                car.update_progress_reward(track.checkpoints)
 
         # ------------------------------------------
-        # ALIVE CARS
+        # ALIVE
         # ------------------------------------------
 
-        alive_cars = [
-            car
-            for car in cars
-            if car.alive
-        ]
-
-        # ------------------------------------------
-        # END GENERATION?
-        # ------------------------------------------
-
-        everyone_dead = (
-            len(alive_cars) == 0
-        )
-
-        time_limit_reached = (
-            generation_frame
-            >= MAX_FRAMES_PER_GENERATION
-        )
-
-        if (
-            everyone_dead
-            or time_limit_reached
-        ):
-            next_generation()
-
-            draw_track()
-
-            alive_cars = [
-                car
-                for car in cars
-                if car.alive
-            ]
+        alive_cars = [car for car in cars if car.alive]
 
         # ------------------------------------------
         # CURRENT BEST
         # ------------------------------------------
 
-        current_best_car = max(
-            cars,
-            key=lambda car: car.fitness
-        )
+        current_best_car = max(cars, key=calculate_track_fitness)
+
+        # ------------------------------------------
+        # END TRACK?
+        # ------------------------------------------
+
+        if len(alive_cars) == 0 or track_frame >= MAX_FRAMES_PER_TRACK:
+            finish_current_track()
+
+            # State may now point to
+            # another track/generation.
+            track = TRAINING_TRACKS[current_track_index]
+
+            track.draw(screen)
+
+            alive_cars = [car for car in cars if car.alive]
+
+            current_best_car = max(cars, key=calculate_track_fitness)
 
         # ------------------------------------------
         # DRAW CHECKPOINTS
         # ------------------------------------------
 
-        draw_checkpoints()
+        draw_checkpoints(track)
 
         # ------------------------------------------
         # DRAW CARS
         # ------------------------------------------
 
         for car in cars:
-
             if not car.alive:
                 continue
 
-            if (
-                car is current_best_car
-            ):
-                car.draw(
-                    screen,
-                    (
-                        255,
-                        220,
-                        0
-                    )
-                )
+            if car is current_best_car:
+                car.draw(screen, (255, 220, 0))
 
             else:
-                car.draw(
-                    screen,
-                    (
-                        220,
-                        50,
-                        50
-                    )
-                )
+                car.draw(screen, (220, 50, 50))
 
         # ------------------------------------------
-        # BEST SENSORS
+        # SENSORS
         # ------------------------------------------
 
         if current_best_car.alive:
-            current_best_car.draw_sensors(
-                screen
-            )
+            current_best_car.draw_sensors(screen)
 
         # ------------------------------------------
-        # DISPLAY RECORD
+        # EVOLUTION INFO
         # ------------------------------------------
 
-        if (
-            best_fitness_ever
-            == float("-inf")
-        ):
-            best_ever_display = 0
-
-        else:
-            best_ever_display = (
-                best_fitness_ever
-            )
+        (mutation_mode, low_mutation, medium_mutation, high_mutation, random_count) = (
+            get_evolution_settings()
+        )
 
         # ------------------------------------------
         # HUD
         # ------------------------------------------
 
-        mode_text = font.render(
-            "MODE: TRAIN",
-            True,
-            (
-                100,
-                255,
-                100
-            )
-        )
+        mode_text = font.render("MODE: MULTI-TRACK TRAIN", True, (100, 255, 100))
 
         generation_text = font.render(
-            f"Generation: {generation}",
+            f"Generation: {generation}", True, (255, 255, 255)
+        )
+
+        track_text = font.render(
+            (f"Track: {current_track_index + 1}/{len(TRAINING_TRACKS)} - {track.name}"),
             True,
-            (
-                255,
-                255,
-                255
-            )
+            (255, 255, 255),
         )
 
         alive_text = font.render(
-            (
-                f"Alive: "
-                f"{len(alive_cars)}"
-                f"/{POPULATION_SIZE}"
-            ),
-            True,
-            (
-                255,
-                255,
-                255
-            )
+            (f"Alive: {len(alive_cars)}/{POPULATION_SIZE}"), True, (255, 255, 255)
         )
 
-        fitness_text = font.render(
-            (
-                f"Best fitness: "
-                f"{current_best_car.fitness:.1f}"
-            ),
+        fitness_text = small_font.render(
+            (f"Current track fitness: {calculate_track_fitness(current_best_car):.1f}"),
             True,
-            (
-                255,
-                255,
-                255
-            )
+            (220, 220, 220),
         )
 
-        laps_text = font.render(
+        control_text = small_font.render(
             (
-                f"Laps: "
-                f"{current_best_car.laps_completed}"
+                f"Steering: "
+                f"{current_best_car.last_steering:+.2f}"
+                f" | Throttle: "
+                f"{current_best_car.last_throttle:.2f}"
+                f" | Speed: "
+                f"{current_best_car.velocity:.2f}"
             ),
             True,
-            (
-                255,
-                255,
-                255
-            )
+            (220, 220, 220),
         )
 
-        checkpoint_text = font.render(
+        evolution_text = small_font.render(
             (
-                f"Checkpoints: "
-                f"{current_best_car.checkpoints_passed}"
+                f"Evolution: "
+                f"{mutation_mode}"
+                f" | Stagnation: "
+                f"{generations_without_improvement}"
             ),
             True,
-            (
-                255,
-                255,
-                255
-            )
+            (220, 220, 220),
         )
 
         frame_text = small_font.render(
-            (
-                f"Frame: "
-                f"{generation_frame}"
-                f"/{MAX_FRAMES_PER_GENERATION}"
-            ),
+            (f"Track frame: {track_frame}/{MAX_FRAMES_PER_TRACK}"),
             True,
-            (
-                220,
-                220,
-                220
-            )
+            (220, 220, 220),
         )
 
-        record_text = small_font.render(
-            (
-                f"Best ever: "
-                f"{best_ever_display:.1f}"
-                f" | Laps: "
-                f"{best_laps_ever}"
-                f" | Checkpoints: "
-                f"{best_checkpoints_ever}"
-            ),
-            True,
-            (
-                220,
-                220,
-                220
-            )
-        )
+        controls_text = small_font.render("TAB = Demo", True, (220, 220, 220))
 
-        controls_text = small_font.render(
-            (
-                "TAB = Demo | "
-                "R = restart training"
-            ),
-            True,
-            (
-                220,
-                220,
-                220
-            )
-        )
+        screen.blit(mode_text, (20, 20))
 
-        screen.blit(
-            mode_text,
-            (20, 20)
-        )
+        screen.blit(generation_text, (20, 55))
 
-        screen.blit(
-            generation_text,
-            (20, 55)
-        )
+        screen.blit(track_text, (20, 85))
 
-        screen.blit(
-            alive_text,
-            (20, 85)
-        )
+        screen.blit(alive_text, (20, 115))
 
-        screen.blit(
-            fitness_text,
-            (20, 115)
-        )
+        screen.blit(fitness_text, (20, 150))
 
-        screen.blit(
-            laps_text,
-            (20, 145)
-        )
+        screen.blit(control_text, (20, 175))
 
-        screen.blit(
-            checkpoint_text,
-            (20, 175)
-        )
+        screen.blit(evolution_text, (20, 200))
 
-        screen.blit(
-            frame_text,
-            (20, 210)
-        )
+        screen.blit(frame_text, (20, 225))
 
-        screen.blit(
-            record_text,
-            (20, 235)
-        )
-
-        screen.blit(
-            controls_text,
-            (20, 260)
-        )
+        screen.blit(controls_text, (20, 250))
 
     # ==================================================
     # DEMO MODE
     # ==================================================
 
-    elif mode == MODE_DEMO:
+    else:
+        track = TRAINING_TRACKS[demo_track_index]
+
+        track.draw(screen)
 
         if demo_car is not None:
-
-            # --------------------------------------
-            # UPDATE
-            # --------------------------------------
-
             if demo_car.alive:
+                demo_car.neural_control(screen)
 
-                demo_car.neural_control(
-                    screen
-                )
-
-                demo_car.check_collision(
-                    screen
-                )
+                demo_car.check_collision(screen)
 
                 if demo_car.alive:
+                    demo_car.update_checkpoint(track.checkpoints)
 
-                    demo_car.update_checkpoint(
-                        checkpoints
-                    )
-
-                    demo_car.update_progress_reward(
-                        checkpoints
-                    )
+                    demo_car.update_progress_reward(track.checkpoints)
 
             # --------------------------------------
             # LAP TIMER
             # --------------------------------------
 
-            if (
-                demo_car.laps_completed
-                > demo_previous_laps
-            ):
-                lap_time = (
-                    time.time()
-                    - demo_lap_start_time
-                )
+            if demo_car.laps_completed > demo_previous_laps:
+                lap_time = time.time() - demo_lap_start_time
 
-                print(
-                    f"Demo lap "
-                    f"{demo_car.laps_completed}: "
-                    f"{lap_time:.2f}s"
-                )
+                if demo_best_lap is None or lap_time < demo_best_lap:
+                    demo_best_lap = lap_time
 
-                if (
-                    demo_best_lap is None
-                    or lap_time
-                    < demo_best_lap
-                ):
-                    demo_best_lap = (
-                        lap_time
-                    )
+                print(f"{track.name} | Lap {demo_car.laps_completed}: {lap_time:.2f}s")
 
-                    print(
-                        f"NEW DEMO BEST LAP: "
-                        f"{demo_best_lap:.2f}s"
-                    )
+                demo_previous_laps = demo_car.laps_completed
 
-                demo_previous_laps = (
-                    demo_car.laps_completed
-                )
-
-                demo_lap_start_time = (
-                    time.time()
-                )
+                demo_lap_start_time = time.time()
 
             # --------------------------------------
-            # DRAW CHECKPOINTS
+            # DRAW
             # --------------------------------------
 
-            draw_checkpoints()
-
-            # --------------------------------------
-            # DRAW CAR
-            # --------------------------------------
+            draw_checkpoints(track)
 
             if demo_car.alive:
+                demo_car.draw(screen, (255, 220, 0))
 
-                demo_car.draw(
-                    screen,
-                    (
-                        255,
-                        220,
-                        0
-                    )
-                )
-
-                demo_car.draw_sensors(
-                    screen
-                )
-
-            # --------------------------------------
-            # CURRENT LAP TIME
-            # --------------------------------------
-
-            current_lap_time = (
-                time.time()
-                - demo_lap_start_time
-            )
+                demo_car.draw_sensors(screen)
 
             # --------------------------------------
             # HUD
             # --------------------------------------
 
-            mode_text = font.render(
-                "MODE: DEMO",
-                True,
+            mode_text = font.render("MODE: MULTI-TRACK DEMO", True, (255, 220, 0))
+
+            track_text = font.render(
                 (
-                    255,
-                    220,
-                    0
-                )
+                    f"Track: "
+                    f"{demo_track_index + 1}"
+                    f"/{len(TRAINING_TRACKS)} "
+                    f"- {track.name}"
+                ),
+                True,
+                (255, 255, 255),
             )
 
             laps_text = font.render(
-                (
-                    f"Laps: "
-                    f"{demo_car.laps_completed}"
-                ),
-                True,
-                (
-                    255,
-                    255,
-                    255
-                )
-            )
-
-            checkpoint_text = font.render(
-                (
-                    f"Checkpoints: "
-                    f"{demo_car.checkpoints_passed}"
-                ),
-                True,
-                (
-                    255,
-                    255,
-                    255
-                )
-            )
-
-            current_time_text = font.render(
-                (
-                    f"Lap time: "
-                    f"{current_lap_time:.2f}s"
-                ),
-                True,
-                (
-                    255,
-                    255,
-                    255
-                )
-            )
-
-            if demo_best_lap is None:
-                best_lap_string = (
-                    "Best lap: --"
-                )
-
-            else:
-                best_lap_string = (
-                    f"Best lap: "
-                    f"{demo_best_lap:.2f}s"
-                )
-
-            best_lap_text = font.render(
-                best_lap_string,
-                True,
-                (
-                    255,
-                    255,
-                    255
-                )
-            )
-
-            status = (
-                "ALIVE"
-                if demo_car.alive
-                else "CRASHED"
-            )
-
-            status_text = font.render(
-                f"Status: {status}",
-                True,
-                (
-                    255,
-                    255,
-                    255
-                )
+                (f"Laps: {demo_car.laps_completed}"), True, (255, 255, 255)
             )
 
             controls_text = small_font.render(
-                (
-                    "TAB = Train | "
-                    "R = restart demo"
-                ),
-                True,
-                (
-                    220,
-                    220,
-                    220
-                )
+                ("N = Next track | R = Restart | TAB = Train"), True, (220, 220, 220)
             )
 
-            screen.blit(
-                mode_text,
-                (20, 20)
-            )
+            screen.blit(mode_text, (20, 20))
 
-            screen.blit(
-                laps_text,
-                (20, 55)
-            )
+            screen.blit(track_text, (20, 55))
 
-            screen.blit(
-                checkpoint_text,
-                (20, 85)
-            )
+            screen.blit(laps_text, (20, 85))
 
-            screen.blit(
-                current_time_text,
-                (20, 115)
-            )
-
-            screen.blit(
-                best_lap_text,
-                (20, 145)
-            )
-
-            screen.blit(
-                status_text,
-                (20, 175)
-            )
-
-            screen.blit(
-                controls_text,
-                (20, 210)
-            )
+            screen.blit(controls_text, (20, 120))
 
     # ==================================================
     # DISPLAY
@@ -1295,9 +1040,7 @@ while running:
 
     pygame.display.flip()
 
-    clock.tick(
-        FPS
-    )
+    clock.tick(FPS)
 
 
 pygame.quit()

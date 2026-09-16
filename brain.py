@@ -3,17 +3,16 @@ import numpy as np
 
 class Brain:
     def __init__(self):
-        # 6 inputs:
-        # 5 sensors + speed
+        # Inputs:
+        # 5 sensors + speed = 6
         self.weights1 = np.random.randn(6, 8)
         self.bias1 = np.random.randn(8)
 
-        # 3 outputs:
-        # 0 = left
-        # 1 = straight
-        # 2 = right
-        self.weights2 = np.random.randn(8, 3)
-        self.bias2 = np.random.randn(3)
+        # Outputs:
+        # 0 = steering
+        # 1 = throttle
+        self.weights2 = np.random.randn(8, 2)
+        self.bias2 = np.random.randn(2)
 
     # ==================================================
     # FORWARD PASS
@@ -30,45 +29,58 @@ class Brain:
             + self.bias1
         )
 
-        output = (
+        raw_output = (
             hidden @ self.weights2
             + self.bias2
         )
 
-        return int(
-            np.argmax(output)
+        output = np.tanh(
+            raw_output
         )
+
+        # Steering stays in [-1, 1]
+        steering = float(
+            output[0]
+        )
+
+        # Convert throttle:
+        # [-1, 1] -> [0, 1]
+        throttle = float(
+            (output[1] + 1.0) / 2.0
+        )
+
+        return steering, throttle
 
     # ==================================================
     # COPY
     # ==================================================
 
     def copy(self):
-        new_brain = Brain()
+        brain = Brain()
 
-        new_brain.weights1 = (
+        brain.weights1 = (
             self.weights1.copy()
         )
 
-        new_brain.bias1 = (
+        brain.bias1 = (
             self.bias1.copy()
         )
 
-        new_brain.weights2 = (
+        brain.weights2 = (
             self.weights2.copy()
         )
 
-        new_brain.bias2 = (
+        brain.bias2 = (
             self.bias2.copy()
         )
 
-        return new_brain
+        return brain
 
     # ==================================================
     # MUTATION
     # ==================================================
 
-    def mutate(self, rate=0.15):
+    def mutate(self, rate=0.05):
         self.weights1 += (
             np.random.randn(
                 *self.weights1.shape
@@ -181,7 +193,17 @@ class Brain:
 
     @staticmethod
     def load(filename):
-        data = np.load(filename)
+        data = np.load(
+            filename
+        )
+
+        # Basic compatibility check
+        if data["weights2"].shape != (8, 2):
+            raise ValueError(
+                "Saved brain has an incompatible "
+                "output layer. Continuous-control "
+                "brain requires shape (8, 2)."
+            )
 
         brain = Brain()
 

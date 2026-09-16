@@ -3,4 +3,5 @@ __pycache__/
 *.pyc
 .idea/
 .vscode/
-best_brain.npz
+*.npz
+training_history*.csv

@@ -1,0 +1,20 @@
+UNSEEN TRACK EVALUATION SUMMARY
+
+Model: best_brain_multitrack.npz
+
+Episodes: 10
+Average laps: 0.00
+Best laps: 0
+Worst laps: 0
+Average checkpoints: 0.30
+Average frames: 540.70
+Average normalized speed: 0.308
+Crash count: 7/10
+Crash rate: 70.0%
+
+Conclusion:
+The multi-track model shows modest improvement over the single-track model on the unseen environment.
+
+It survives longer, reaches slightly more checkpoints, maintains a higher average speed, and reduces the crash rate from 80% to 70%.
+
+However, the model still fails to complete a full lap, indicating that strong generalization has not yet been achieved.

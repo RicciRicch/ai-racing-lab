@@ -1,0 +1,18 @@
+UNSEEN TRACK EVALUATION SUMMARY
+
+Model: best_brain_continuous.npz
+
+Episodes: 10
+Average laps: 0.00
+Best laps: 0
+Worst laps: 0
+Average checkpoints: 0.20
+Average frames: 360.80
+Average normalized speed: 0.211
+Crash count: 8/10
+Crash rate: 80.0%
+
+Conclusion:
+The single-track model does not generalize reliably to significantly different track geometry.
+
+The model failed to complete a full lap on the unseen track and crashed in most evaluation episodes.
