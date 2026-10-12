@@ -482,6 +482,7 @@ The objective was therefore changed to a maximin strategy:
 
 ```text
 fitness = minimum(track_scores)
+```
 
 This makes the weakest track determine the candidate's fitness and encourages balanced behavior across environments.
 
