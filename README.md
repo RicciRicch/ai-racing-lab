@@ -8,6 +8,8 @@ The project began with a rule-based controller and has grown into an experimenta
 
 The simulation is now also exposed as a **Gymnasium environment** (`AIRacing-v0`), the foundation for training **reinforcement-learning** agents with PyTorch and TensorFlow and comparing them with neuroevolution under identical conditions. See [Reinforcement-learning environment](#reinforcement-learning-environment).
 
+A **PPO agent in PyTorch** is trained in that environment. On the original track it matches the neuroevolution champion (10 laps) after a fraction of the simulation steps. See [PPO agent in PyTorch](#ppo-agent-in-pytorch).
+
 ## Contents
 
 - [Features](#features)
@@ -24,6 +26,7 @@ The simulation is now also exposed as a **Gymnasium environment** (`AIRacing-v0`
 - [Configuration](#configuration)
 - [Development findings](#development-findings)
 - [Reinforcement-learning environment](#reinforcement-learning-environment)
+- [PPO agent in PyTorch](#ppo-agent-in-pytorch)
 - [Tests](#tests)
 - [Roadmap](#roadmap)
 
@@ -45,6 +48,8 @@ The simulation is now also exposed as a **Gymnasium environment** (`AIRacing-v0`
 - Per-generation CSV history and Matplotlib training plots
 - Gymnasium environment (`AIRacing-v0`) with headless, NumPy-based sensors
 - Bit-for-bit parity between the RL environment and the original simulation, enforced by tests
+- PPO agent in PyTorch with shared, framework-independent training and evaluation code
+- Multi-seed experiments, learning curves and comparison tables against neuroevolution
 - Pytest test suite
 
 ## Getting started
@@ -116,6 +121,7 @@ python -m pip install -r requirements-dev.txt
 | `requirements.txt` | Pygame, NumPy, Matplotlib (neuroevolution simulation) |
 | `requirements-rl.txt` | The above plus Gymnasium |
 | `requirements-dev.txt` | The above plus pytest |
+| `requirements-torch.txt` | `requirements-rl.txt` plus PyTorch |
 
 ## Controls and operating modes
 
@@ -362,7 +368,8 @@ ai-racing-lab/
 │   ├── unseen_track_single_model.txt
 │   ├── multitrack_evaluation.txt
 │   ├── unseen_track_multitrack_model.txt
-│   └── training_summary.md
+│   ├── training_summary.md
+│   └── rl/                RL results: tables, curves, summaries
 │
 ├── envs/
 │   Gymnasium environment for reinforcement learning.
@@ -375,15 +382,25 @@ ai-racing-lab/
 │   ├── demo.py            watch a policy drive
 │   └── benchmark.py       simulation speed comparison
 │
+├── rl/
+│   Reinforcement-learning agents.
+│
+│   ├── common.py          PPOConfig, VecEnv, buffer, GAE, track sampler
+│   ├── trainer.py         framework-independent PPO loop and CLI
+│   ├── ppo_torch.py       PyTorch actor-critic agent
+│   ├── evaluate.py        one evaluator for every model type
+│   ├── compare.py         multi-model Markdown comparison tables
+│   └── plot_runs.py       learning curves across seeds
+│
 ├── tests/
 │   Pytest suite: geometry, parity with the original
-│   simulation, and environment behavior.
+│   simulation, environment behavior and PPO components.
 │
 ├── requirements.txt
 │   Neuroevolution dependencies.
 │
-├── requirements-rl.txt / requirements-dev.txt
-│   Extra dependencies for RL and for tests.
+├── requirements-rl.txt / requirements-dev.txt / requirements-torch.txt
+│   Extra dependencies for RL, tests and PyTorch.
 │
 ├── pytest.ini
 │   Test discovery settings.
@@ -396,7 +413,7 @@ ai-racing-lab/
     Project documentation and experimental results.
 ```
 
-Model archives (`*.npz`) and generated training histories (`training_history*.csv`) are ignored by Git. The five summaries in `results/` are kept under version control.
+Model archives (`*.npz`, `*.pt`), generated training histories (`training_history*.csv`) and RL runs (`runs/`) are ignored by Git. The summaries in `results/` are kept under version control.
 
 ## Configuration
 
@@ -599,7 +616,7 @@ car.py ────► EnvCar(Car) ◄───────────┘   ext
                  │
      ┌───────────┼──────────────┐
   BrainPolicy  PyTorch agent  TensorFlow agent
-  (neuroevo)   (planned)      (planned)
+  (neuroevo)   (phase 2)      (planned)
 ```
 
 | Module | Responsibility |
@@ -730,6 +747,99 @@ With only 4–5 valid positions, a full lap was practically impossible for any p
 
 Two tests now guard against regressions: no track may spawn the car in a collision, and every checkpoint on every track must be reachable from at least 40 positions. The corrected results are in [Unseen-Track Evaluation](#unseen-track-evaluation) and [Single-Track vs Multi-Track Generalization](#single-track-vs-multi-track-generalization).
 
+## PPO agent in PyTorch
+
+Phase 2 trains **Proximal Policy Optimization (PPO)** agents in `AIRacing-v0` with **PyTorch** and compares them with the neuroevolution champions. The full write-up is in [`results/rl/torch_ppo_summary.md`](results/rl/torch_ppo_summary.md).
+
+### Shared code, framework-specific networks
+
+The PPO implementation is split so that only the neural-network code depends on the framework. The TensorFlow agent in phase 3 will reuse everything else unchanged, which keeps the framework comparison fair.
+
+```text
+                    framework-independent (NumPy)
+┌──────────────────────────────────────────────────────────────┐
+│ rl/common.py   PPOConfig, VecEnv, RolloutBuffer, GAE,        │
+│                weakest-track sampler                         │
+│ rl/trainer.py  rollouts, bootstrapping, minibatches, LR      │
+│                annealing, evaluation, checkpoints, CSV logs  │
+│ rl/evaluate.py one evaluator for .npz, .pt (and later TF)    │
+└──────────────────────────────┬───────────────────────────────┘
+                               │  act · value · predict · train_step · save
+                ┌──────────────┴──────────────┐
+        rl/ppo_torch.py                 rl/ppo_tf.py
+        PyTorch actor-critic            (phase 3)
+```
+
+| Component | Choice |
+|---|---|
+| Policy | Gaussian over `[steering, throttle_raw]`; the actor predicts the mean, the log std is a learned parameter |
+| Networks | Separate actor and critic, 2 × 64 tanh, orthogonal initialization |
+| Objective | Clipped surrogate (ε = 0.2) + 0.5 × value loss; gradient clipping at 0.5 |
+| Advantages | GAE (γ = 0.99, λ = 0.95), normalized per minibatch |
+| Time limits | Truncated episodes are bootstrapped with γ · V(final observation) instead of being treated as crashes |
+| Rollouts | 8 environments × 256 steps = 2,048 steps per update; 10 epochs × 8 minibatches |
+| Learning rate | Adam 3e-4, linearly annealed to zero |
+| Model selection | `best.pt` = highest **worst-track** evaluation fitness (maximin, like multi-track NE) |
+| Threads | One CPU thread: faster for a network this small, and reproducible across machines |
+
+### Training
+
+```sh
+python -m pip install -r requirements-torch.txt --extra-index-url https://download.pytorch.org/whl/cpu
+```
+
+```sh
+python -m rl.trainer --framework torch --tracks train:0 --seed 0 --run-name torch_single_seed0
+python -m rl.trainer --framework torch --tracks train --seed 0 --run-name torch_multi_seed0
+python -m rl.trainer --framework torch --tracks train --track-sampling weakest --seed 0 --run-name torch_multiweak_seed0
+```
+
+Every `PPOConfig` field is available as a command-line option, such as `--total-timesteps`, `--num-envs` or `--learning-rate`. Each run writes to `runs/<run-name>/`:
+
+| File | Contents |
+|---|---|
+| `config.json` | Full configuration |
+| `progress.csv` | Per update: returns, laps, crash rate, losses, entropy, approximate KL, clip fraction, steps/s |
+| `eval.csv` | Periodic deterministic evaluation per track |
+| `best.pt`, `final.pt` | Best (maximin) and final checkpoints |
+
+`runs/` and `*.pt` are ignored by Git, like the `*.npz` neuroevolution models.
+
+### Evaluation and comparison
+
+```sh
+python -m rl.evaluate runs/torch_multi_seed0/best.pt --tracks all --episodes 10
+python -m rl.compare best_brain_multitrack.npz torch_multi --output results/rl/table.md
+python -m rl.plot_runs torch_single torch_multi --output results/rl/curves.png
+python -m envs.demo --policy brain --model best_brain_multitrack.npz   # NE in a window
+```
+
+All models, NE and PPO, are evaluated by the same code on the same tracks with the same seeds (10,000–10,009) and deterministic actions.
+
+### Results
+
+Three seeds per configuration, 1,000,000 environment steps each. The table shows mean laps over 10 evaluation episodes per track (per-seed details in [`results/rl/torch_ppo_evaluation.md`](results/rl/torch_ppo_evaluation.md)):
+
+| Model | Classic Oval | Tall Oval | Asymmetric Oval | Unseen Narrow Oval | Worst training-track fitness |
+|---|---:|---:|---:|---:|---:|
+| NE single-track | 10.0 | 0.0 | 0.0 | 0.0 | 252 |
+| PPO single-track | 10.0 | 0.0 | 0.0 | 0.0 | 24 |
+| NE multi-track | 0.0 | 9.0 | 0.0 | 8.0 | **3,420** |
+| PPO multi-track, uniform sampling | 0.0 | 8.7 | 0.0 | 7.1 | 2,548 |
+| PPO multi-track, weakest-track sampling | 2.7 | 7.7 | 0.0 | 5.7 | 2,588 |
+
+![PPO learning curves](results/rl/torch_learning_curves.png)
+
+**Findings**
+
+- **Single-track PPO matches neuroevolution.** All seeds complete 10 laps on the Classic Oval without crashing.
+- **PPO is far more sample-efficient.** It reached 9 laps after about 41,000 steps, about 10 seconds of training. The NE champion first reached 9 laps in generation 3, after at most 216,000 simulated car-frames.
+- **Multi-track PPO specializes,** like NE with average fitness: uniform sampling maximizes the average return. Two seeds still lap the unseen track **9 times**, more than the NE champion's 8.
+- **Weakest-track sampling** is the RL counterpart of maximin fitness. It produced the first model that laps two training tracks (Classic and Tall), but it did not raise the worst-track score.
+- **The Asymmetric Oval is a shared bottleneck.** No NE or PPO model laps it. Its left checkpoint sits near the outer edge of a wide lane, while fast policies take the inner line.
+
+A 1M-step run takes 6.5–8.5 minutes on a laptop CPU.
+
 ## Tests
 
 ```sh
@@ -741,8 +851,12 @@ python -m pytest
 | `tests/test_track_geometry.py` | Masks match rendered pixels; starts are on the road; no collision at spawn; every checkpoint reachable; the unseen-track copy matches `evaluate_unseen_track.py` |
 | `tests/test_env_car_parity.py` | `EnvCar` reproduces the original `Car` exactly, frame by frame |
 | `tests/test_racing_env.py` | Gymnasium checker, registration, spaces, return = scaled fitness, termination, truncation, seeding, track selection, action clipping, rendering, saved-champion laps |
+| `tests/test_rl_common.py` | GAE against its definition, VecEnv autoreset and returns, weakest-track sampler, buffers, config |
+| `tests/test_ppo_torch.py` | Log-probabilities, seeding, policy and value updates, save/load |
+| `tests/test_trainer.py` | Logs and checkpoints of a short run, LR annealing, identical results for identical seeds, CLI |
+| `tests/test_rl_evaluate.py`, `tests/test_rl_compare.py` | Shared evaluation and comparison tables |
 
-Tests run headless (SDL dummy video driver). Tests that need a trained model (`*.npz`, not tracked by Git) are skipped automatically when the file is missing.
+Tests run headless (SDL dummy video driver). PyTorch tests are skipped when PyTorch is not installed. Tests that need a trained model (`*.npz`, not tracked by Git) are skipped automatically when the file is missing.
 
 ## Roadmap
 
@@ -766,6 +880,7 @@ Tests run headless (SDL dummy video driver). Tests that need a trained model (`*
 - [x] Gymnasium environment (`AIRacing-v0`) with bit-for-bit parity tests
 - [x] Headless, vectorized sensors (2.6× faster than pixel reads)
 - [x] Corrected unseen-track evaluation: the multi-track model completes 8 laps without crashing
+- [x] PPO in PyTorch with multi-seed experiments and weakest-track sampling
 
 ### Next: dedicated evaluation
 
@@ -792,7 +907,7 @@ Tests run headless (SDL dummy video driver). Tests that need a trained model (`*
 ### Reinforcement learning: PyTorch and TensorFlow
 
 - [x] **Phase 1:** Gymnasium environment on top of the existing simulation
-- [ ] **Phase 2:** PPO agent in PyTorch, trained on one and on several tracks
+- [x] **Phase 2:** PPO agent in PyTorch, trained on one and on several tracks
 - [ ] **Phase 3:** The same PPO agent in TensorFlow / Keras
 - [ ] **Phase 4:** Common evaluation of neuroevolution, PyTorch PPO and TensorFlow PPO: training-track performance, unseen-track generalization, sample efficiency and training time
 

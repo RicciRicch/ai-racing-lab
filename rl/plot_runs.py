@@ -1,0 +1,111 @@
+"""Plot PPO learning curves from runs/<name>/eval.csv.
+
+Runs that differ only in their seed suffix (``_seed0``, ``_seed1`` ...)
+are grouped: the line is the mean over seeds, the band spans min-max.
+
+    python -m rl.plot_runs torch_single torch_multi --output results/rl/torch_learning_curves.png
+"""
+
+import argparse
+import csv
+import glob
+import os
+from collections import defaultdict
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+
+def read_eval(path):
+    """{global_step: {track: row}} from one eval.csv."""
+    steps = defaultdict(dict)
+
+    with open(path, newline="") as file:
+        for row in csv.DictReader(file):
+            steps[int(row["global_step"])][row["track"]] = row
+
+    return steps
+
+
+def group_curves(runs_dir, prefix, metric):
+    """Steps and per-seed arrays for worst-track and per-track metric."""
+    paths = sorted(glob.glob(os.path.join(runs_dir, prefix + "_seed*", "eval.csv")))
+
+    if not paths:
+        raise FileNotFoundError(f"No runs found for {prefix!r} in {runs_dir}")
+
+    runs = [read_eval(path) for path in paths]
+    steps = sorted(set.intersection(*(set(run) for run in runs)))
+    tracks = list(runs[0][steps[0]])
+
+    per_track = {
+        track: np.array([
+            [float(run[step][track][metric]) for step in steps]
+            for run in runs
+        ])
+        for track in tracks
+    }
+
+    worst = np.min(np.stack(list(per_track.values())), axis=0)
+
+    return np.array(steps), worst, per_track, len(paths)
+
+
+def plot_band(axis, steps, values, label):
+    mean = values.mean(axis=0)
+    axis.plot(steps, mean, label=label)
+    axis.fill_between(steps, values.min(axis=0), values.max(axis=0), alpha=0.2)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("prefixes", nargs="+")
+    parser.add_argument("--runs-dir", default="runs")
+    parser.add_argument("--output", default=None)
+    args = parser.parse_args()
+
+    figure, axes = plt.subplots(
+        len(args.prefixes), 2,
+        figsize=(12, 4 * len(args.prefixes)),
+        squeeze=False
+    )
+
+    for row, prefix in enumerate(args.prefixes):
+        steps, worst, per_track, seeds = group_curves(
+            args.runs_dir, prefix, "fitness"
+        )
+        _, _, laps, _ = group_curves(args.runs_dir, prefix, "laps")
+
+        fitness_axis, laps_axis = axes[row]
+
+        plot_band(fitness_axis, steps, worst, "worst track")
+        for track, values in per_track.items():
+            fitness_axis.plot(steps, values.mean(axis=0), "--", lw=1, label=track)
+
+        fitness_axis.set_title(f"{prefix}: evaluation fitness ({seeds} seeds)")
+        fitness_axis.set_xlabel("environment steps")
+        fitness_axis.set_ylabel("fitness")
+        fitness_axis.legend(fontsize=8)
+        fitness_axis.grid(alpha=0.3)
+
+        for track, values in laps.items():
+            plot_band(laps_axis, steps, values, track)
+
+        laps_axis.set_title(f"{prefix}: evaluation laps (mean, min-max)")
+        laps_axis.set_xlabel("environment steps")
+        laps_axis.set_ylabel("laps in 1800 frames")
+        laps_axis.legend(fontsize=8)
+        laps_axis.grid(alpha=0.3)
+
+    figure.tight_layout()
+
+    if args.output:
+        os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+        figure.savefig(args.output, dpi=110)
+        print(f"Saved {args.output}")
+    else:
+        plt.show()
+
+
+if __name__ == "__main__":
+    main()
