@@ -15,7 +15,7 @@ from car import Car
 WIDTH = 1000
 HEIGHT = 700
 
-MODEL_FILE = "best_brain_continuous.npz"
+MODEL_FILE = "best_brain_multitrack.npz"
 
 EPISODES = 10
 
