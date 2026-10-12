@@ -29,7 +29,8 @@ HEIGHT = 700
 # Copy of the track defined in evaluate_unseen_track.py.
 # That script opens a window as soon as it is imported, so the
 # definition is repeated here. tests/test_track_geometry.py verifies
-# that both versions produce an identical grass mask.
+# that both versions produce an identical grass mask, start and
+# checkpoints.
 
 def draw_unseen_track(screen):
     # Outer road shape
@@ -47,17 +48,17 @@ unseen_track = Track(
     name="Unseen Narrow Oval",
 
     start_x=500,
-    start_y=600,
+    start_y=575,
     start_angle=-90,
 
     # Clockwise: bottom-right, right, top-right,
     # top-left, left, bottom-left
     checkpoints=[
         pygame.Rect(650, 500, 50, 20),
-        pygame.Rect(800, 310, 20, 60),
+        pygame.Rect(725, 310, 20, 60),
         pygame.Rect(650, 150, 50, 20),
         pygame.Rect(300, 150, 50, 20),
-        pygame.Rect(180, 310, 20, 60),
+        pygame.Rect(255, 310, 20, 60),
         pygame.Rect(300, 500, 50, 20),
     ],
 

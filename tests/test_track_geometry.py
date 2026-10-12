@@ -84,21 +84,7 @@ def test_unseen_track_copy_matches_evaluation_script():
 
 @pytest.mark.parametrize(
     "track",
-    [
-        *TRAINING_TRACKS,
-        pytest.param(
-            unseen_track,
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason=(
-                    "Known issue: the unseen-track start (500, 600) is 9 px "
-                    "from the outer edge, so the car's rear collision point "
-                    "touches grass at spawn. Kept identical to "
-                    "evaluate_unseen_track.py until both are fixed together."
-                ),
-            ),
-        ),
-    ],
+    TRACK_SETS["all"],
     ids=lambda track: track.name
 )
 def test_car_does_not_collide_at_spawn(track):
@@ -114,3 +100,34 @@ def test_car_does_not_collide_at_spawn(track):
     car.check_track_collision()
 
     assert car.alive
+
+
+@pytest.mark.parametrize(
+    "track",
+    TRACK_SETS["all"],
+    ids=lambda track: track.name
+)
+def test_every_checkpoint_is_reachable(track):
+    # Count car positions that touch each checkpoint without colliding.
+    # The training tracks allow 49-69 positions per checkpoint; the
+    # original unseen track allowed only 4-5 for its side checkpoints,
+    # which made a full lap practically impossible.
+    from envs.env_car import EnvCar
+
+    car = EnvCar(0, 0, 0, TrackGeometry(track))
+
+    for index, checkpoint in enumerate(track.checkpoints):
+        vertical = checkpoint.height > checkpoint.width
+        reachable = set()
+
+        for x in range(checkpoint.left - 40, checkpoint.right + 40):
+            for y in range(checkpoint.top - 40, checkpoint.bottom + 40):
+                for angle in (0, 180, -90, 90, 45, -45, 135, -135):
+                    car.x, car.y, car.angle = x, y, angle
+                    car.alive = True
+                    car.check_track_collision()
+
+                    if car.alive and car.get_rect().colliderect(checkpoint):
+                        reachable.add(x if vertical else y)
+
+        assert len(reachable) >= 40, f"checkpoint {index}"

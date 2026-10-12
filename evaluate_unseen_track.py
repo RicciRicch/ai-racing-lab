@@ -22,7 +22,12 @@ EPISODES = 10
 MAX_FRAMES_PER_EPISODE = 1800
 
 START_X = 500
-START_Y = 600
+
+# The road at x = 500 spans y = 485..609. Starting at y = 600 put the
+# car's rear collision point on grass, so many episodes crashed on the
+# first frame. 575 keeps the car 34 px from the outer edge, like the
+# starts of the training tracks (29-39 px).
+START_Y = 575
 START_ANGLE = -90
 
 
@@ -85,8 +90,10 @@ checkpoints = [
         20
     ),
 
+    # Centred in the right lane (x = 670..799). It used to sit at
+    # x = 800..820, on the grass, and was almost unreachable.
     pygame.Rect(
-        800,
+        725,
         310,
         20,
         60
@@ -106,8 +113,10 @@ checkpoints = [
         20
     ),
 
+    # Centred in the left lane (x = 200..329). It used to sit at
+    # x = 180..200, on the grass, and was almost unreachable.
     pygame.Rect(
-        180,
+        255,
         310,
         20,
         60
