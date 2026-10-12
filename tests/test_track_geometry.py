@@ -80,3 +80,37 @@ def test_unseen_track_copy_matches_evaluation_script():
         original.START_X,
         original.START_Y,
     )
+
+
+@pytest.mark.parametrize(
+    "track",
+    [
+        *TRAINING_TRACKS,
+        pytest.param(
+            unseen_track,
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason=(
+                    "Known issue: the unseen-track start (500, 600) is 9 px "
+                    "from the outer edge, so the car's rear collision point "
+                    "touches grass at spawn. Kept identical to "
+                    "evaluate_unseen_track.py until both are fixed together."
+                ),
+            ),
+        ),
+    ],
+    ids=lambda track: track.name
+)
+def test_car_does_not_collide_at_spawn(track):
+    from envs.env_car import EnvCar
+
+    car = EnvCar(
+        track.start_x,
+        track.start_y,
+        track.start_angle,
+        TrackGeometry(track),
+    )
+
+    car.check_track_collision()
+
+    assert car.alive
