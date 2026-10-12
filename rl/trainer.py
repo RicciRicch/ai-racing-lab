@@ -28,7 +28,13 @@ from rl.evaluate import evaluate_policy
 
 def make_agent(framework, config):
     if framework == "torch":
+        import torch
+
         from rl.ppo_torch import TorchPPOAgent
+
+        # The networks are tiny: one thread is faster than several, and
+        # results no longer depend on the machine's core count.
+        torch.set_num_threads(1)
 
         return TorchPPOAgent(config)
 
