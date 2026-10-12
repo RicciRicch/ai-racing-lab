@@ -4,6 +4,12 @@ Runs that differ only in their seed suffix (``_seed0``, ``_seed1`` ...)
 are grouped: the line is the mean over seeds, the band spans min-max.
 
     python -m rl.plot_runs torch_single torch_multi --output results/rl/torch_learning_curves.png
+
+With --overlay, all groups share one pair of axes: worst-track fitness
+against environment steps and against wall-clock training time. This
+is how the PyTorch and TensorFlow agents are compared.
+
+    python -m rl.plot_runs torch_single tf_single --overlay --output results/rl/frameworks_single.png
 """
 
 import argparse
@@ -51,6 +57,48 @@ def group_curves(runs_dir, prefix, metric):
     return np.array(steps), worst, per_track, len(paths)
 
 
+def wall_clock(runs_dir, prefix, steps):
+    """Per-seed training time (s) at each evaluation step."""
+    paths = sorted(glob.glob(os.path.join(runs_dir, prefix + "_seed*", "progress.csv")))
+    times = []
+
+    for path in paths:
+        with open(path, newline="") as file:
+            by_step = {
+                int(row["global_step"]): float(row["time"])
+                for row in csv.DictReader(file)
+            }
+        times.append([by_step[step] for step in steps])
+
+    return np.array(times)
+
+
+def plot_overlay(args):
+    figure, (steps_axis, time_axis) = plt.subplots(1, 2, figsize=(12, 4.5))
+
+    for prefix in args.prefixes:
+        steps, worst, _, seeds = group_curves(args.runs_dir, prefix, "fitness")
+        times = wall_clock(args.runs_dir, prefix, steps).mean(axis=0)
+        label = f"{prefix} ({seeds} seeds)"
+
+        plot_band(steps_axis, steps, worst, label)
+        plot_band(time_axis, times, worst, label)
+
+    steps_axis.set_xlabel("environment steps")
+    time_axis.set_xlabel("training time (s, mean over seeds)")
+
+    for axis, title in (
+        (steps_axis, "Worst-track fitness vs environment steps"),
+        (time_axis, "Worst-track fitness vs training time"),
+    ):
+        axis.set_title(title)
+        axis.set_ylabel("worst-track evaluation fitness")
+        axis.legend(fontsize=8)
+        axis.grid(alpha=0.3)
+
+    return figure
+
+
 def plot_band(axis, steps, values, label):
     mean = values.mean(axis=0)
     axis.plot(steps, mean, label=label)
@@ -62,7 +110,13 @@ def main():
     parser.add_argument("prefixes", nargs="+")
     parser.add_argument("--runs-dir", default="runs")
     parser.add_argument("--output", default=None)
+    parser.add_argument("--overlay", action="store_true",
+                        help="compare groups on shared axes")
     args = parser.parse_args()
+
+    if args.overlay:
+        save_or_show(plot_overlay(args), args.output)
+        return
 
     figure, axes = plt.subplots(
         len(args.prefixes), 2,
@@ -97,12 +151,16 @@ def main():
         laps_axis.legend(fontsize=8)
         laps_axis.grid(alpha=0.3)
 
+    save_or_show(figure, args.output)
+
+
+def save_or_show(figure, output):
     figure.tight_layout()
 
-    if args.output:
-        os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
-        figure.savefig(args.output, dpi=110)
-        print(f"Saved {args.output}")
+    if output:
+        os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
+        figure.savefig(output, dpi=110)
+        print(f"Saved {output}")
     else:
         plt.show()
 
