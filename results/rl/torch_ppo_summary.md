@@ -4,6 +4,8 @@ Phase 2 of the reinforcement-learning extension. PPO agents were trained in `AIR
 
 Full per-seed table: [`torch_ppo_evaluation.md`](torch_ppo_evaluation.md). Learning curves: [`torch_learning_curves.png`](torch_learning_curves.png).
 
+> **Note (phase 3):** these runs used Adam ε = 1e-5. Phase 3 found that PyTorch and Keras apply epsilon differently and switched both agents to a shared ε = 1e-8. The PyTorch runs were repeated with that setting; see [`framework_comparison.md`](framework_comparison.md). The conclusions below still hold.
+
 ## Setup
 
 | Setting | Value |
