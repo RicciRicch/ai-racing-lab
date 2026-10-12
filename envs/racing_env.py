@@ -122,6 +122,11 @@ class RacingEnv(gym.Env):
 
         self._next_cycle_index = 0
 
+        # Created lazily on the first render() call.
+        self._surface = None
+        self._clock = None
+        self._font = None
+
     # ==================================================
     # RESET
     # ==================================================
@@ -251,7 +256,86 @@ class RacingEnv(gym.Env):
     # ==================================================
 
     def render(self):
-        return None
+        if self.render_mode is None or self.car is None:
+            return None
+
+        import pygame
+
+        if self._surface is None:
+            pygame.init()
+
+            size = (
+                self.car.geometry.width,
+                self.car.geometry.height,
+            )
+
+            if self.render_mode == "human":
+                pygame.display.set_caption("AI Racing Lab - RL Environment")
+                self._surface = pygame.display.set_mode(size)
+                self._clock = pygame.time.Clock()
+            else:
+                self._surface = pygame.Surface(size)
+
+            self._font = pygame.font.SysFont("consolas", 18)
+
+        surface = self._surface
+
+        self.track.draw(surface)
+
+        for index, checkpoint in enumerate(self.track.checkpoints):
+            if index == self.car.current_checkpoint:
+                pygame.draw.rect(surface, (255, 220, 0), checkpoint, 3)
+            else:
+                pygame.draw.rect(surface, (0, 200, 255), checkpoint, 2)
+
+        if self.car.alive:
+            for end_point in self.car.sensor_endpoints():
+                pygame.draw.line(
+                    surface,
+                    (255, 255, 0),
+                    (int(self.car.x), int(self.car.y)),
+                    end_point,
+                    2
+                )
+                pygame.draw.circle(surface, (255, 0, 0), end_point, 4)
+
+        self.car.draw(surface, (255, 220, 0))
+
+        info = self._info()
+
+        lines = [
+            f"Track: {info['track']}",
+            f"Step: {self.steps}/{self.max_steps}",
+            f"Laps: {info['laps']}  Checkpoints: {info['checkpoints']}",
+            f"Speed: {self.car.velocity:.2f}",
+            f"Steering: {self.car.last_steering:+.2f}  "
+            f"Throttle: {self.car.last_throttle:.2f}",
+            f"Fitness: {info['fitness']:.1f}",
+        ]
+
+        for row, text in enumerate(lines):
+            surface.blit(
+                self._font.render(text, True, (255, 255, 255)),
+                (10, 10 + row * 22)
+            )
+
+        if self.render_mode == "human":
+            pygame.event.pump()
+            pygame.display.flip()
+            self._clock.tick(self.metadata["render_fps"])
+            return None
+
+        # surfarray is (x, y); images are (height, width).
+        return np.transpose(
+            pygame.surfarray.array3d(surface),
+            (1, 0, 2)
+        )
 
     def close(self):
-        pass
+        if self._surface is not None:
+            import pygame
+
+            if self.render_mode == "human":
+                pygame.display.quit()
+
+            self._surface = None

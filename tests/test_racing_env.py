@@ -12,7 +12,7 @@ from envs.track_geometry import TRACK_SETS
 
 
 def test_passes_gymnasium_env_checker():
-    check_env(RacingEnv(), skip_render_check=True)
+    check_env(gym.make("AIRacing-v0", render_mode="rgb_array").unwrapped)
 
 
 def test_registered_with_gymnasium():
@@ -141,3 +141,25 @@ def test_saved_champion_drives_through_env():
 
     assert truncated and not terminated
     assert info["laps"] == 10
+
+
+def test_rgb_array_render():
+    env = RacingEnv(render_mode="rgb_array")
+    env.reset(seed=0)
+    env.step(full_throttle(None))
+
+    frame = env.render()
+
+    assert frame.shape == (700, 1000, 3)
+    assert frame.dtype == np.uint8
+
+    env.close()
+
+
+def test_human_render_runs_headless():
+    # conftest.py selects SDL's dummy video driver.
+    env = RacingEnv(render_mode="human")
+    env.metadata = {**env.metadata, "render_fps": 0}
+    env.reset(seed=0)
+    env.step(full_throttle(None))
+    env.close()
