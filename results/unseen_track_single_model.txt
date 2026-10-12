@@ -1,18 +1,26 @@
 UNSEEN TRACK EVALUATION SUMMARY
 
 Model: best_brain_continuous.npz
+Track: corrected unseen track (start y=575, side checkpoints centred in their lanes)
+Command: evaluate_unseen_track.py with random.seed(0)
 
 Episodes: 10
 Average laps: 0.00
 Best laps: 0
 Worst laps: 0
-Average checkpoints: 0.20
-Average frames: 360.80
-Average normalized speed: 0.211
-Crash count: 8/10
-Crash rate: 80.0%
+Average checkpoints: 1.00
+Average frames: 1800.00
+Average normalized speed: 0.985
+Crash count: 0/10
+Crash rate: 0.0%
 
 Conclusion:
-The single-track model does not generalize reliably to significantly different track geometry.
+The single-track model drives around the unseen track for the full episode at almost maximum speed without crashing.
 
-The model failed to complete a full lap on the unseen track and crashed in most evaluation episodes.
+However, it follows a tight line along the inner edge and passes inside the right-side checkpoint. Because checkpoints must be visited in order, its lap counter never advances after the first checkpoint.
+
+The model transfers its driving skill (staying on the road at speed) but not the racing line the checkpoint layout expects.
+
+Earlier result (before the track fix):
+0.00 laps, 0.20 checkpoints, 360.8 frames, 0.211 speed, 80% crash rate.
+That run was dominated by the start position, which placed the car on the grass edge, and by side checkpoints that lay on the grass. See git history (commit a58d6fb) for the original file.
