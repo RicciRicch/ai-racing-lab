@@ -1,0 +1,5 @@
+# PyTorch agent (phase 2).
+# CPU build is enough for this small network:
+#   python -m pip install -r requirements-torch.txt --extra-index-url https://download.pytorch.org/whl/cpu
+-r requirements-rl.txt
+torch>=2.2
