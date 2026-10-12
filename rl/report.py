@@ -34,18 +34,23 @@ METHODS = [
 ]
 
 SCENARIOS = [
-    # name, run suffix, target description, target test on eval rows
+    # name, run suffix, number of training tracks,
+    # target description, target test on eval rows
     (
         "Single-track (Classic Oval)",
         "single",
+        1,
         "9 laps on the Classic Oval",
         lambda rows: all(float(r["laps"]) >= 9 for r in rows),
     ),
     (
         "Multi-track (Classic, Tall, Asymmetric)",
         "multi",
-        "worst-track fitness >= 2,000",
-        lambda rows: min(float(r["fitness"]) for r in rows) >= 2000,
+        3,
+        # Circling without laps scores at most ~4,000 on a track, so
+        # 10,000 requires laps on every training track.
+        "worst-track fitness >= 10,000 (laps on all three tracks)",
+        lambda rows: min(float(r["fitness"]) for r in rows) >= 10_000,
     ),
 ]
 
@@ -111,7 +116,8 @@ def evaluate_group(runs_dir, group, episodes):
     return results
 
 
-def scenario_section(name, suffix, target_text, target, runs_dir, episodes):
+def scenario_section(name, suffix, training_tracks, target_text, target,
+                     runs_dir, episodes):
     lines = [f"## {name}", ""]
 
     performance = []
@@ -131,7 +137,10 @@ def scenario_section(name, suffix, target_text, target, runs_dir, episodes):
         mean = average(per_seed)
         tracks = list(mean)
 
-        worst = [min(r[t]["fitness"] for t in tracks[:3]) for r in per_seed]
+        worst = [
+            min(r[t]["fitness"] for t in tracks[:training_tracks])
+            for r in per_seed
+        ]
 
         performance.append(
             f"| {label} | "
@@ -234,10 +243,11 @@ def main():
         "",
     ]
 
-    for name, suffix, target_text, target in SCENARIOS:
+    for name, suffix, training_tracks, target_text, target in SCENARIOS:
         scenario_plot(suffix, args.runs_dir, os.path.join(output_dir, f"final_{suffix}.png"))
         sections.append(
-            scenario_section(name, suffix, target_text, target, args.runs_dir, args.episodes)
+            scenario_section(name, suffix, training_tracks, target_text,
+                             target, args.runs_dir, args.episodes)
         )
 
     text = "\n".join(sections)
