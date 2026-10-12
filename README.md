@@ -6,6 +6,8 @@ The current policy uses **continuous steering and throttle control**, learning b
 
 The project began with a rule-based controller and has grown into an experimental environment for studying autonomous agents, evolutionary optimization, and driving performance.
 
+The simulation is now also exposed as a **Gymnasium environment** (`AIRacing-v0`), the foundation for training **reinforcement-learning** agents with PyTorch and TensorFlow and comparing them with neuroevolution under identical conditions. See [Reinforcement-learning environment](#reinforcement-learning-environment).
+
 ## Contents
 
 - [Features](#features)
@@ -21,6 +23,8 @@ The project began with a rule-based controller and has grown into an experimenta
 - [Project structure](#project-structure)
 - [Configuration](#configuration)
 - [Development findings](#development-findings)
+- [Reinforcement-learning environment](#reinforcement-learning-environment)
+- [Tests](#tests)
 - [Roadmap](#roadmap)
 
 ## Features
@@ -39,6 +43,9 @@ The project began with a rule-based controller and has grown into an experimenta
 - Automatic saving and loading of the best model
 - Lap timing in DEMO mode
 - Per-generation CSV history and Matplotlib training plots
+- Gymnasium environment (`AIRacing-v0`) with headless, NumPy-based sensors
+- Bit-for-bit parity between the RL environment and the original simulation, enforced by tests
+- Pytest test suite
 
 ## Getting started
 
@@ -89,6 +96,26 @@ python plot_training.py
 ```
 
 Run these commands from the project directory so relative model and history paths resolve consistently.
+
+### Reinforcement-learning extension
+
+The RL environment and tests need a few extra packages. The neuroevolution simulation above does not require them.
+
+```sh
+python -m pip install -r requirements-rl.txt
+```
+
+For development and tests:
+
+```sh
+python -m pip install -r requirements-dev.txt
+```
+
+| File | Contents |
+|---|---|
+| `requirements.txt` | Pygame, NumPy, Matplotlib (neuroevolution simulation) |
+| `requirements-rl.txt` | The above plus Gymnasium |
+| `requirements-dev.txt` | The above plus pytest |
 
 ## Controls and operating modes
 
@@ -337,8 +364,29 @@ ai-racing-lab/
 │   ├── unseen_track_multitrack_model.txt
 │   └── training_summary.md
 │
+├── envs/
+│   Gymnasium environment for reinforcement learning.
+│
+│   ├── __init__.py        registers AIRacing-v0
+│   ├── track_geometry.py  headless grass masks, unseen track, track sets
+│   ├── env_car.py         EnvCar: external controls, vectorized sensors
+│   ├── racing_env.py      RacingEnv: spaces, reward, termination, render
+│   ├── brain_policy.py    run a neuroevolution Brain in the environment
+│   ├── demo.py            watch a policy drive
+│   └── benchmark.py       simulation speed comparison
+│
+├── tests/
+│   Pytest suite: geometry, parity with the original
+│   simulation, and environment behavior.
+│
 ├── requirements.txt
-│   Python dependencies.
+│   Neuroevolution dependencies.
+│
+├── requirements-rl.txt / requirements-dev.txt
+│   Extra dependencies for RL and for tests.
+│
+├── pytest.ini
+│   Test discovery settings.
 │
 ├── .gitignore
 │   Excludes virtual environments, caches,
@@ -527,6 +575,148 @@ Future work includes:
 - randomized track generation
 - evaluation on completely unseen environments
 
+## Reinforcement-learning environment
+
+The next stage of the project compares neuroevolution with **reinforcement learning** (RL), implemented in both **PyTorch** and **TensorFlow**. A fair comparison needs every method to drive the same car, on the same tracks, with the same sensors and the same objective. The first step is therefore a standard [Gymnasium](https://gymnasium.farama.org/) environment built on top of the existing simulation, without changing it.
+
+The neuroevolution code (`main.py`, `car.py`, `brain.py`, `tracks.py` and the evaluation scripts) is untouched. The RL environment lives in the new `envs/` package and reuses `Car` and `Track` directly.
+
+### Design
+
+```text
+tracks.py ──► TrackGeometry ──► grass mask (NumPy, rasterized once)
+                                     │
+car.py ────► EnvCar(Car) ◄───────────┘   external controls, fast sensors
+                 │
+                 ▼
+            RacingEnv (gymnasium.Env, "AIRacing-v0")
+                 │
+     ┌───────────┼──────────────┐
+  BrainPolicy  PyTorch agent  TensorFlow agent
+  (neuroevo)   (planned)      (planned)
+```
+
+| Module | Responsibility |
+|---|---|
+| `envs/track_geometry.py` | Draws each `Track` once on an off-screen surface and stores grass as a boolean mask. Also defines the unseen evaluation track and the `train` / `unseen` / `all` track sets. |
+| `envs/env_car.py` | `EnvCar` subclasses `Car`. It receives steering and throttle from outside and casts all five sensor rays in one vectorized mask query. Checkpoints, laps, progress and drawing come from `Car` unchanged. |
+| `envs/racing_env.py` | `RacingEnv`: observation and action spaces, reward, termination, track selection and rendering. |
+| `envs/brain_policy.py` | Runs a saved neuroevolution `Brain` as a policy inside the environment. |
+| `envs/demo.py` | Watches any policy drive in a window. |
+| `envs/benchmark.py` | Compares simulation speed with the original pixel-based loop. |
+
+### Why a grass mask instead of screen pixels?
+
+The original simulation detects grass by reading pixels from the rendered screen with `screen.get_at`. RL training needs hundreds of thousands of steps, ideally without a window. `TrackGeometry` draws each track once with the same `Track.draw` function, then answers sensor and collision queries with array lookups.
+
+### Observations, actions and reward
+
+The interface is deliberately identical to the neuroevolution `Brain`, so policies from both approaches are interchangeable.
+
+| | Shape | Range | Meaning |
+|---|---|---|---|
+| Observation | `(6,)` | `[0, 1]` | `[left_far, left, front, right, right_far, speed]`, normalized exactly as in `Car.neural_control` |
+| Action | `(2,)` | `[-1, 1]` | `[steering, throttle_raw]`, the raw tanh outputs of `Brain`; throttle = `(throttle_raw + 1) / 2` |
+
+**Reward** is the per-step change of the neuroevolution track fitness (`calculate_track_fitness` in `main.py`):
+
+```text
+fitness = 1000 · checkpoints + 0.5 · progress + 0.05 · speed + 0.01 · frames_alive − 100 · crashed
+
+reward_t = (fitness_t − fitness_{t−1}) · reward_scale        (reward_scale = 0.01)
+```
+
+Because the rewards telescope, the undiscounted episode return equals `fitness × reward_scale`. RL agents optimize the same objective as the evolved population, and their scores can be compared directly.
+
+| Episode end | Condition |
+|---|---|
+| `terminated` | The car hits grass or leaves the screen |
+| `truncated` | `max_steps` reached (default 1,800, same as `MAX_FRAMES_PER_TRACK`) |
+
+Each reset applies the same start noise as training and evaluation (x ±8 px, y ±4 px, heading ±4°), seeded through Gymnasium for reproducibility.
+
+### Usage
+
+```python
+import gymnasium as gym
+import envs  # registers AIRacing-v0
+
+env = gym.make("AIRacing-v0", tracks="train")      # "train", "unseen" or "all"
+observation, info = env.reset(seed=0)
+
+terminated = truncated = False
+while not (terminated or truncated):
+    action = env.action_space.sample()
+    observation, reward, terminated, truncated, info = env.step(action)
+
+print(info)  # track, fitness, checkpoints, laps, frames_alive, average_speed, crashed
+```
+
+| Argument | Default | Purpose |
+|---|---|---|
+| `tracks` | `"train"` | `"train"`, `"unseen"`, `"all"` or a list of `Track` objects |
+| `track_selection` | `"random"` | `"random"` samples a track per episode; `"cycle"` goes through them in order |
+| `max_steps` | `1800` | Truncation limit |
+| `randomize_start` | `True` | Apply start-position and heading noise |
+| `reward_scale` | `0.01` | Multiplier for fitness deltas |
+| `render_mode` | `None` | `"human"` opens a window; `"rgb_array"` returns frames |
+
+A specific track can be forced with `env.reset(options={"track_index": i})`.
+
+Watch a saved neuroevolution champion drive through the environment:
+
+```sh
+python -m envs.demo --policy brain --model best_brain_multitrack.npz --tracks all --episodes 4
+```
+
+### Verifying the environment
+
+The environment is only useful for comparison if it behaves exactly like the original simulation. This is checked in three ways:
+
+1. **Bit-for-bit parity.** `tests/test_env_car_parity.py` drives an original `Car` (pixel reads, `Brain` inside `neural_control`) and an `EnvCar` side by side for 1,800 frames on all four tracks. It uses a wall-following driver, random networks and both saved champions. Every observation and every state value (position, heading, speed, checkpoints, laps, progress, alive) must be identical on every frame.
+2. **Reproducing earlier results.** In the environment, the single-track champion completes 10 laps on the Classic Oval, as in `results/single_track_evaluation.txt`. The multi-track champion's returns (×100) reproduce the per-track fitness reported in [Multi-Track Generalization](#multi-track-generalization):
+
+   | Track | Fitness reported for the champion | Environment return × 100 (`envs.demo`, seeds 0–3) |
+   |---|---:|---:|
+   | Classic Oval | 3,546 | 3,535 |
+   | Tall Oval | 42,130 | 42,129 |
+   | Asymmetric Oval | 3,816 | 3,810 |
+
+   Small differences come from the random start offsets.
+3. **Gymnasium compliance.** The environment passes `gymnasium.utils.env_checker.check_env`.
+
+### Performance
+
+`python -m envs.benchmark` runs the same `Brain` for 20,000 steps per track:
+
+| Track | Original (`screen.get_at`) | `RacingEnv` | Speed-up |
+|---|---:|---:|---:|
+| Classic Oval | ~6,500 steps/s | ~16,900 steps/s | 2.6× |
+| Tall Oval | ~6,400 steps/s | ~16,900 steps/s | 2.6× |
+| Asymmetric Oval | ~6,900 steps/s | ~17,000 steps/s | 2.5× |
+
+The first version cast each sensor ray separately and reached only 1.2×. Casting all five rays in one `(rays × samples)` NumPy operation produced the final speed-up without changing a single result. Measured on a laptop CPU; absolute numbers vary by machine.
+
+### Known issue: unseen-track spawn position
+
+Building the environment exposed a problem in the existing unseen-track evaluation. The car starts at `y = 600`, but the road ends at `y = 609`. Facing right, the car's rear collision point sits at `y + 10`, which is already on grass. With the evaluation's ±4 px start noise, a large share of episodes crash on the first frame, **regardless of the policy**.
+
+This explains the episodes that "terminated almost immediately" in [Unseen-Track Evaluation](#unseen-track-evaluation), and it inflates the reported 70–80% crash rates. The environment currently keeps the original start so that the two remain identical. `tests/test_track_geometry.py` documents the issue with a strict `xfail` test, which will fail once the start position is fixed so the marker is removed. Fixing it means moving the start toward the road centre (about `y = 547`) in both places and re-running the unseen-track evaluations.
+
+## Tests
+
+```sh
+python -m pytest
+```
+
+| Test file | What it checks |
+|---|---|
+| `tests/test_track_geometry.py` | Masks match rendered pixels; starts are on the road; the unseen-track copy is pixel-identical to `evaluate_unseen_track.py`; spawn collision (known issue, `xfail`) |
+| `tests/test_env_car_parity.py` | `EnvCar` reproduces the original `Car` exactly, frame by frame |
+| `tests/test_racing_env.py` | Gymnasium checker, registration, spaces, return = scaled fitness, termination, truncation, seeding, track selection, action clipping, rendering, saved-champion laps |
+
+Tests run headless (SDL dummy video driver). Tests that need a trained model (`*.npz`, not tracked by Git) are skipped automatically when the file is missing.
+
 ## Roadmap
 
 ### Implemented
@@ -545,11 +735,14 @@ Future work includes:
 - [x] TRAIN and DEMO modes
 - [x] DEMO lap timing
 - [x] CSV generation history and training plots
+- [x] Multi-track training with maximin fitness
+- [x] Gymnasium environment (`AIRacing-v0`) with bit-for-bit parity tests
+- [x] Headless, vectorized sensors (2.6× faster than pixel reads)
 
 ### Next: dedicated evaluation
 
-- [ ] Create a separate model evaluation script
-- [ ] Evaluate saved champions over repeated episodes
+- [x] Create a separate model evaluation script
+- [x] Evaluate saved champions over repeated episodes
 - [ ] Report average and best lap times
 - [ ] Report crash rate and checkpoints reached before crashing
 - [ ] Report average throttle and absolute steering magnitude
@@ -559,13 +752,21 @@ Future work includes:
 
 ### Environment and training improvements
 
-- [ ] Add additional track layouts
-- [ ] Test generalization on unseen tracks and different starting conditions
-- [ ] Separate simulation logic from rendering
-- [ ] Support headless and accelerated training
+- [x] Add additional track layouts
+- [x] Test generalization on unseen tracks and different starting conditions
+- [x] Separate simulation logic from rendering (`envs/`)
+- [x] Support headless and accelerated training (`envs/`)
 - [ ] Experiment with network size and fitness design
-- [ ] Introduce a Gymnasium-style environment interface
+- [x] Introduce a Gymnasium-style environment interface
 - [ ] Compare neuroevolution with reinforcement-learning approaches suited to continuous control
+- [ ] Fix the unseen-track spawn position and re-run its evaluations
+
+### Reinforcement learning: PyTorch and TensorFlow
+
+- [x] **Phase 1:** Gymnasium environment on top of the existing simulation
+- [ ] **Phase 2:** PPO agent in PyTorch, trained on one and on several tracks
+- [ ] **Phase 3:** The same PPO agent in TensorFlow / Keras
+- [ ] **Phase 4:** Common evaluation of neuroevolution, PyTorch PPO and TensorFlow PPO: training-track performance, unseen-track generalization, sample efficiency and training time
 
 ## Long-term goal
 
