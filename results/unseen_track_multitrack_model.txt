@@ -1,20 +1,24 @@
 UNSEEN TRACK EVALUATION SUMMARY
 
 Model: best_brain_multitrack.npz
+Track: corrected unseen track (start y=575, side checkpoints centred in their lanes)
+Command: evaluate_unseen_track.py with random.seed(0)
 
 Episodes: 10
-Average laps: 0.00
-Best laps: 0
-Worst laps: 0
-Average checkpoints: 0.30
-Average frames: 540.70
-Average normalized speed: 0.308
-Crash count: 7/10
-Crash rate: 70.0%
+Average laps: 8.00
+Best laps: 8
+Worst laps: 8
+Average checkpoints: 51.00
+Average frames: 1800.00
+Average normalized speed: 0.985
+Crash count: 0/10
+Crash rate: 0.0%
 
 Conclusion:
-The multi-track model shows modest improvement over the single-track model on the unseen environment.
+The multi-track model generalizes to the unseen track: it completes 8 laps in every episode, never crashes and keeps almost maximum speed.
 
-It survives longer, reaches slightly more checkpoints, maintains a higher average speed, and reduces the crash rate from 80% to 70%.
+Its wider racing line passes through all six checkpoints, unlike the single-track model, which survives but misses the right-side checkpoint.
 
-However, the model still fails to complete a full lap, indicating that strong generalization has not yet been achieved.
+Earlier result (before the track fix):
+0.00 laps, 0.30 checkpoints, 540.7 frames, 0.308 speed, 70% crash rate.
+That run was dominated by the start position, which placed the car on the grass edge, and by side checkpoints that lay on the grass. See git history (commit a58d6fb) for the original file.

@@ -5,3 +5,4 @@ __pycache__/
 .vscode/
 *.npz
 training_history*.csv
+.pytest_cache/

@@ -1,0 +1,4 @@
+# Reinforcement-learning extension.
+# Install with: python -m pip install -r requirements-rl.txt
+-r requirements.txt
+gymnasium>=1.0

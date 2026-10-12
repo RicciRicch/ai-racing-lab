@@ -63,6 +63,8 @@ This revealed strong overfitting to the original training environment.
 
 Although the model performed extremely well on the training track, it failed to generalize reliably to substantially different track geometry.
 
+> **Correction:** these results were dominated by defects in the unseen track (start position touching the grass, side checkpoints on the grass). See *Correction: Corrected Unseen Track* below.
+
 ---
 
 ## Multi-Track Training
@@ -192,6 +194,27 @@ Compared with the single-track model, it:
 However, neither model completed a full lap on the unseen track.
 
 This suggests that multi-track neuroevolution improved robustness, but did not yet produce strong generalization to substantially different track geometry.
+
+### Correction: Corrected Unseen Track
+
+While building the Gymnasium environment (`envs/`), two defects were found in the unseen track:
+
+- The start position (`y = 600`) placed the car's rear collision point on the grass. Over 100 seeds, 59% of episodes crashed on the first frame for both models.
+- The right and left checkpoints lay on the grass. Only 4–5 collision-free car positions could touch them, against 49–69 for every checkpoint on the training tracks.
+
+After moving the start to `y = 575` and centring the side checkpoints in their lanes, both models were evaluated again (10 episodes, `random.seed(0)`):
+
+| Metric | Single-Track Model | Multi-Track Model |
+|---|---:|---:|
+| Average laps | 0.00 | **8.00** |
+| Average checkpoints | 1.00 | **51.00** |
+| Average frames survived | 1800.00 | 1800.00 |
+| Average normalized speed | 0.985 | 0.985 |
+| Crash rate | 0.0% | 0.0% |
+
+Neither model crashes. The single-track model drives a tight inner line that misses the right-side checkpoint, so its lap counter never advances. The multi-track model completes 8 laps in every episode.
+
+The corrected comparison shows that multi-track neuroevolution with maximin fitness **does** generalize to this unseen track, which is a much stronger result than the "modest improvement" concluded above.
 
 ---
 
