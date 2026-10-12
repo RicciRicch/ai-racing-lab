@@ -98,33 +98,33 @@ class EnvCar(Car):
 
     def sensor_distances(self):
         """Distances for left_far, left, front, right, right_far."""
-        distances = []
+        # math.sin/cos per ray keep results bit-identical to cast_sensor.
+        sines = np.empty((len(SENSOR_ANGLES), 1))
+        cosines = np.empty((len(SENSOR_ANGLES), 1))
 
-        for relative_angle in SENSOR_ANGLES:
+        for row, relative_angle in enumerate(SENSOR_ANGLES):
             radians = math.radians(
                 self.angle + relative_angle
             )
 
-            # Same expression as Car.cast_sensor, evaluated for all
-            # samples at once. astype(int) truncates like int().
-            xs = (
-                self.x - math.sin(radians) * _SENSOR_SAMPLES
-            ).astype(int)
+            sines[row, 0] = math.sin(radians)
+            cosines[row, 0] = math.cos(radians)
 
-            ys = (
-                self.y - math.cos(radians) * _SENSOR_SAMPLES
-            ).astype(int)
+        # Same expression as Car.cast_sensor, evaluated for all rays and
+        # samples at once (shape: rays x samples). astype(int) truncates
+        # toward zero like int().
+        xs = (self.x - sines * _SENSOR_SAMPLES).astype(int)
+        ys = (self.y - cosines * _SENSOR_SAMPLES).astype(int)
 
-            blocked = self.geometry.blocked_array(xs, ys)
+        blocked = self.geometry.blocked_array(xs, ys)
 
-            if blocked.any():
-                distances.append(
-                    int(_SENSOR_SAMPLES[blocked.argmax()])
-                )
-            else:
-                distances.append(SENSOR_RANGE)
+        first_hit = blocked.argmax(axis=1)
+        hit = blocked[np.arange(len(SENSOR_ANGLES)), first_hit]
 
-        return distances
+        return [
+            int(_SENSOR_SAMPLES[index]) if was_hit else SENSOR_RANGE
+            for index, was_hit in zip(first_hit, hit)
+        ]
 
     def observation(self):
         """Normalized inputs in the same order the Brain receives them."""
