@@ -314,7 +314,13 @@ def main(argv=None):
         f"= {config.num_updates * config.batch_size:,} timesteps"
     )
 
-    best = train(agent, config, run_dir)
+    # Flush so progress is visible when output is redirected to a file.
+    best = train(
+        agent,
+        config,
+        run_dir,
+        log=lambda message: print(message, flush=True)
+    )
 
     print(f"Best worst-track evaluation fitness: {best:.1f}")
 
