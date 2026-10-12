@@ -49,3 +49,30 @@ def test_format_median_reports_missing_seeds():
     assert format_median([None, None], str) == "not reached"
     assert steps_text(40_960) == "41k"
     assert steps_text(2_500_000) == "2.50M"
+
+
+def test_group_curves_align_runs_with_different_steps(tmp_path):
+    from rl.plot_runs import group_curves, wall_clock
+
+    for seed, steps in ((0, [100, 250, 400]), (1, [120, 260, 380, 500])):
+        run = tmp_path / f"ne_test_seed{seed}"
+        run.mkdir()
+        write_csv(run / "eval.csv", [
+            {"global_step": s, "track": "A", "fitness": s, "laps": 0}
+            for s in steps
+        ])
+        write_csv(run / "progress.csv", [
+            {"global_step": s, "time": s / 100} for s in steps
+        ])
+
+    steps, worst, _, seeds = group_curves(str(tmp_path), "ne_test", "fitness")
+
+    # Grid covered by both runs: 120..400.
+    assert steps.tolist() == [120, 250, 260, 380, 400]
+    assert seeds == 2
+    # Seed 0 at step 260 still has its evaluation from step 250.
+    assert worst[0].tolist() == [100, 250, 250, 250, 400]
+    assert worst[1].tolist() == [120, 120, 260, 380, 380]
+
+    times = wall_clock(str(tmp_path), "ne_test", steps)
+    assert times[0].tolist() == [1.2, 2.5, 2.6, 3.8, 4.0]
