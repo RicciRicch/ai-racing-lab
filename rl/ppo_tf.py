@@ -129,7 +129,7 @@ class TFPPOAgent:
 
         self.optimizer = keras.optimizers.Adam(
             learning_rate=config.learning_rate,
-            epsilon=1e-5
+            epsilon=config.adam_epsilon
         )
         self.optimizer.build(self.model.trainable_variables)
 

@@ -91,7 +91,7 @@ class TorchPPOAgent:
         self.optimizer = torch.optim.Adam(
             self.model.parameters(),
             lr=config.learning_rate,
-            eps=1e-5
+            eps=config.adam_epsilon
         )
 
     # ==================================================

@@ -36,6 +36,10 @@ class PPOConfig:
     # Optimization
     learning_rate: float = 3e-4
     anneal_lr: bool = True
+    # PyTorch adds epsilon to the bias-corrected sqrt(v), Keras to the
+    # uncorrected one (up to 31.6x larger in the first steps). A small
+    # value keeps both frameworks' Adam updates practically identical.
+    adam_epsilon: float = 1e-8
     update_epochs: int = 10
     num_minibatches: int = 8
     gamma: float = 0.99
