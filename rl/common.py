@@ -24,6 +24,8 @@ from envs.track_geometry import TRACK_SETS
 class PPOConfig:
     # Environment
     tracks: str = "train"
+    track_sampling: str = "uniform"     # "uniform" or "weakest"
+    weakest_prob: float = 0.5
     num_envs: int = 8
     max_steps: int = 1800
 
@@ -96,6 +98,55 @@ def resolve_tracks(spec):
 
 
 # ==================================================
+# TRACK SAMPLING
+# ==================================================
+
+class WeakestTrackSampler:
+    """Pick the track the agent currently drives worst more often.
+
+    The RL counterpart of the maximin fitness used by multi-track
+    neuroevolution: instead of scoring a policy by its weakest track,
+    training time is shifted toward that track.
+
+    With probability ``weakest_prob`` the track with the lowest moving
+    average of episode returns is chosen; otherwise a uniform random
+    track. Tracks without any finished episode count as weakest.
+    """
+
+    def __init__(self, num_tracks, weakest_prob=0.5, smoothing=0.1, seed=0):
+        self.num_tracks = num_tracks
+        self.weakest_prob = weakest_prob
+        self.smoothing = smoothing
+        self.rng = np.random.default_rng(seed)
+        self.average_returns = np.full(num_tracks, np.nan)
+
+    def update(self, track_index, episode_return):
+        current = self.average_returns[track_index]
+
+        if np.isnan(current):
+            self.average_returns[track_index] = episode_return
+        else:
+            self.average_returns[track_index] = (
+                (1 - self.smoothing) * current
+                + self.smoothing * episode_return
+            )
+
+    def weakest(self):
+        unseen = np.flatnonzero(np.isnan(self.average_returns))
+
+        if unseen.size:
+            return int(unseen[0])
+
+        return int(np.argmin(self.average_returns))
+
+    def sample(self):
+        if self.rng.random() < self.weakest_prob:
+            return self.weakest()
+
+        return int(self.rng.integers(self.num_tracks))
+
+
+# ==================================================
 # VECTOR ENVIRONMENT
 # ==================================================
 
@@ -113,8 +164,13 @@ class VecEnv:
         tracks,
         num_envs,
         seed=0,
-        max_steps=1800
+        max_steps=1800,
+        track_sampling="uniform",
+        weakest_prob=0.5
     ):
+        if track_sampling not in ("uniform", "weakest"):
+            raise ValueError("track_sampling must be 'uniform' or 'weakest'")
+
         self.envs = [
             RacingEnv(
                 tracks=resolve_tracks(tracks),
@@ -131,9 +187,26 @@ class VecEnv:
 
         self._returns = np.zeros(num_envs)
 
+        # "uniform" leaves track choice to each RacingEnv's own seeded
+        # generator; "weakest" picks tracks through a shared sampler.
+        self.sampler = None
+
+        if track_sampling == "weakest":
+            self.sampler = WeakestTrackSampler(
+                len(self.envs[0].tracks),
+                weakest_prob=weakest_prob,
+                seed=seed
+            )
+
+    def _reset_options(self):
+        if self.sampler is None:
+            return None
+
+        return {"track_index": self.sampler.sample()}
+
     def reset(self):
         observations = [
-            env.reset(seed=self.seed + index)[0]
+            env.reset(seed=self.seed + index, options=self._reset_options())[0]
             for index, env in enumerate(self.envs)
         ]
 
@@ -165,10 +238,16 @@ class VecEnv:
                     "return": float(self._returns[index]),
                 })
 
+                if self.sampler is not None:
+                    self.sampler.update(
+                        info["track_index"],
+                        self._returns[index]
+                    )
+
                 self._returns[index] = 0.0
 
                 # Later resets continue the env's seeded generator.
-                observation, _ = env.reset()
+                observation, _ = env.reset(options=self._reset_options())
 
             observations.append(observation)
 

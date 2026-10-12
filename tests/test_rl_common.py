@@ -144,3 +144,48 @@ def test_rollout_buffer_and_minibatches():
     batches = minibatch_indices(8, 4, np.random.default_rng(0))
     assert len(batches) == 2
     assert sorted(np.concatenate(batches).tolist()) == list(range(8))
+
+
+def test_weakest_sampler_prefers_lowest_average_return():
+    from rl.common import WeakestTrackSampler
+
+    sampler = WeakestTrackSampler(3, weakest_prob=0.5, seed=0)
+
+    # Tracks without episodes are tried first.
+    assert sampler.weakest() == 0
+    sampler.update(0, 50.0)
+    assert sampler.weakest() == 1
+    sampler.update(1, 5.0)
+    sampler.update(2, 30.0)
+    assert sampler.weakest() == 1
+
+    counts = np.bincount([sampler.sample() for _ in range(3000)], minlength=3)
+    # Expected shares: 0.5 + 0.5/3 for track 1, 0.5/3 for the others.
+    assert counts[1] / 3000 == pytest.approx(2 / 3, abs=0.03)
+
+    # Moving average: one good episode does not flip the order at once.
+    sampler.update(1, 100.0)
+    assert sampler.average_returns[1] == pytest.approx(0.9 * 5 + 0.1 * 100)
+
+
+def test_vec_env_weakest_sampling_focuses_on_weak_track():
+    vec_env = VecEnv("train", num_envs=4, seed=0, max_steps=10,
+                     track_sampling="weakest", weakest_prob=1.0)
+    vec_env.reset()
+
+    # Pretend track 2 is the weakest.
+    vec_env.sampler.average_returns[:] = [10.0, 10.0, -5.0]
+
+    idle = np.tile([0.0, -1.0], (4, 1)).astype(np.float32)
+    for _ in range(10):
+        vec_env.step(idle)
+
+    assert all(env.track_index == 2 for env in vec_env.envs)
+
+
+def test_uniform_sampling_is_unchanged_by_the_sampler_option():
+    first = VecEnv("train", num_envs=3, seed=5)
+    second = VecEnv("train", num_envs=3, seed=5, track_sampling="uniform")
+
+    np.testing.assert_array_equal(first.reset(), second.reset())
+    assert [e.track_index for e in first.envs] == [e.track_index for e in second.envs]

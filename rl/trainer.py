@@ -84,7 +84,9 @@ def train(agent, config, run_dir, log=print):
         config.tracks,
         config.num_envs,
         seed=config.seed,
-        max_steps=config.max_steps
+        max_steps=config.max_steps,
+        track_sampling=config.track_sampling,
+        weakest_prob=config.weakest_prob
     )
 
     buffer = RolloutBuffer(
