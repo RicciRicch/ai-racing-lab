@@ -29,6 +29,8 @@ METHODS = [
     ("Neuroevolution (NumPy)", "ne"),
     ("PPO (PyTorch)", "torch"),
     ("PPO (TensorFlow)", "tf"),
+    # Same budget as neuroevolution, multi-track only.
+    ("PPO (PyTorch), 5M steps", "torch5m"),
 ]
 
 SCENARIOS = [
@@ -114,6 +116,7 @@ def scenario_section(name, suffix, target_text, target, runs_dir, episodes):
 
     performance = []
     efficiency = []
+    seed_counts = set()
 
     for label, prefix in METHODS:
         group = f"{prefix}_{suffix}"
@@ -121,6 +124,8 @@ def scenario_section(name, suffix, target_text, target, runs_dir, episodes):
 
         if not dirs:
             continue
+
+        seed_counts.add(len(dirs))
 
         per_seed = evaluate_group(runs_dir, group, episodes)
         mean = average(per_seed)
@@ -151,7 +156,8 @@ def scenario_section(name, suffix, target_text, target, runs_dir, episodes):
         )
 
     lines += [
-        f"### Final performance ({len(dirs)} seeds, best model per seed)",
+        f"### Final performance ({'/'.join(map(str, sorted(seed_counts)))} seeds, "
+        f"best model per seed)",
         "",
         "| Method | " + " | ".join(tracks) + " | Worst training-track fitness, mean (min–max) |",
         "|---|" + "---:|" * (len(tracks) + 1),
