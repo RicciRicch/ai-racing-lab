@@ -472,6 +472,8 @@ However, evaluation on an unseen track revealed poor generalization:
 
 This indicates that the learned policy strongly overfit to the geometry of the training environment.
 
+> **Correction.** These unseen-track numbers were later found to be dominated by two defects in the unseen track itself: a start position touching the grass and side checkpoints placed on the grass. See [Fixing the unseen track](#fixing-the-unseen-track) for corrected results.
+
 The next stage of the project focuses on multi-track training and domain randomization to improve generalization.
 
 ## Single-Track Model Evaluation
@@ -498,25 +500,25 @@ This confirms that the learned policy is highly stable on the original training 
 
 The single-track continuous-control model was also evaluated on a different, previously unseen track.
 
-Results over 10 episodes:
+Results over 10 episodes, before and after [fixing the unseen track](#fixing-the-unseen-track):
 
-| Metric | Result |
-|---|---:|
-| Episodes | 10 |
-| Average laps | 0.00 |
-| Best laps | 0 |
-| Worst laps | 0 |
-| Average checkpoints | 0.20 |
-| Average frames | 360.80 |
-| Average normalized speed | 0.211 |
-| Crash count | 8 / 10 |
-| Crash rate | 80.0% |
+| Metric | Original track | Corrected track |
+|---|---:|---:|
+| Episodes | 10 | 10 |
+| Average laps | 0.00 | 0.00 |
+| Best laps | 0 | 0 |
+| Worst laps | 0 | 0 |
+| Average checkpoints | 0.20 | 1.00 |
+| Average frames | 360.80 | 1800.00 |
+| Average normalized speed | 0.211 | 0.985 |
+| Crash count | 8 / 10 | 0 / 10 |
+| Crash rate | 80.0% | 0.0% |
 
-The model failed to complete a lap on the unseen track and crashed in most episodes.
+On the original track, the model failed to complete a lap and crashed in most episodes. Some episodes terminated almost immediately, which prompted a closer look at the starting position and local geometry.
 
-This shows that the policy learned on a single track does not generalize reliably to significantly different track geometry.
+On the corrected track, the model never crashes and drives around the track for the whole episode at almost maximum speed. However, it takes a tight line along the inner edge and passes inside the right-side checkpoint. Checkpoints must be visited in order, so its lap counter never advances.
 
-Some episodes also terminated almost immediately, indicating that evaluation sensitivity to the unseen track's starting position and local geometry should be investigated further.
+The single-track policy therefore transfers its basic driving skill, staying on the road at speed, but not the racing line the checkpoint layout expects.
 
 ## Multi-Track Generalization
 
@@ -548,23 +550,26 @@ The results show measurable progress toward generalization, although the policy 
 
 ## Single-Track vs Multi-Track Generalization
 
-Both models were evaluated on the same unseen track.
+Both models were evaluated on the same unseen track with `evaluate_unseen_track.py` (10 episodes, `random.seed(0)`), after [fixing the unseen track](#fixing-the-unseen-track).
 
 | Metric | Single-Track Model | Multi-Track Model |
 |---|---:|---:|
-| Average laps | 0.00 | 0.00 |
-| Average checkpoints | 0.20 | 0.30 |
-| Average frames survived | 360.80 | 540.70 |
-| Average normalized speed | 0.211 | 0.308 |
-| Crash rate | 80.0% | 70.0% |
+| Average laps | 0.00 | **8.00** |
+| Average checkpoints | 1.00 | **51.00** |
+| Average frames survived | 1800.00 | 1800.00 |
+| Average normalized speed | 0.985 | 0.985 |
+| Crash rate | 0.0% | 0.0% |
 
-The multi-track model showed modest improvements in robustness on the unseen environment.
+Both models stay on the road for the full episode at almost maximum speed. The difference is the racing line:
 
-Compared with the single-track model, it survived longer, reached more checkpoints, maintained a higher average speed, and reduced the crash rate from 80% to 70%.
+- The **single-track model** circles close to the inner edge and misses the right-side checkpoint, so it never completes a lap.
+- The **multi-track model** drives a wider line, passes every checkpoint and completes **8 laps in every episode**.
 
-However, neither model completed a full lap on the unseen track.
+Multi-track neuroevolution with maximin fitness therefore produced a policy that generalizes to this unseen track.
 
-This suggests that multi-track neuroevolution improved robustness, but did not yet produce strong generalization to substantially different track geometry.
+The table before the fix compared 0.00 vs 0.00 laps and 80% vs 70% crash rates and suggested only modest progress. Those numbers measured the track defects rather than the policies. The original values are preserved in the result files and in the Git history.
+
+The checkpoint result for the single-track model also shows a limitation of the metric itself. Narrow, mid-lane checkpoints reward one family of racing lines, so "laps" can understate a policy that drives safely around the track. Full-width checkpoint gates on all tracks would separate these two effects. They would change training behavior, though, so they belong in a new experiment rather than a silent fix.
 
 ### Future Work
 
@@ -574,6 +579,7 @@ Future work includes:
 - improved crossover strategies
 - randomized track generation
 - evaluation on completely unseen environments
+- full-width checkpoint gates, so lap counts do not depend on one racing line
 
 ## Reinforcement-learning environment
 
@@ -697,11 +703,32 @@ The environment is only useful for comparison if it behaves exactly like the ori
 
 The first version cast each sensor ray separately and reached only 1.2×. Casting all five rays in one `(rays × samples)` NumPy operation produced the final speed-up without changing a single result. Measured on a laptop CPU; absolute numbers vary by machine.
 
-### Known issue: unseen-track spawn position
+### Fixing the unseen track
 
-Building the environment exposed a problem in the existing unseen-track evaluation. The car starts at `y = 600`, but the road ends at `y = 609`. Facing right, the car's rear collision point sits at `y + 10`, which is already on grass. With the evaluation's ±4 px start noise, a large share of episodes crash on the first frame, **regardless of the policy**.
+Building the environment exposed two defects in the existing unseen track. Both made the evaluation measure the track rather than the policy.
 
-This explains the episodes that "terminated almost immediately" in [Unseen-Track Evaluation](#unseen-track-evaluation), and it inflates the reported 70–80% crash rates. The environment currently keeps the original start so that the two remain identical. `tests/test_track_geometry.py` documents the issue with a strict `xfail` test, which will fail once the start position is fixed so the marker is removed. Fixing it means moving the start toward the road centre (about `y = 547`) in both places and re-running the unseen-track evaluations.
+**1. Start position on the grass edge.** The car started at `y = 600`, but the road at `x = 500` ends at `y = 609`. Facing right, the car's rear collision point sits at `y + 10`, which was already on grass. Measured through `RacingEnv` over 100 seeds, **59% of episodes crashed on the first frame** for both saved models. For the single-track model, these were all of its crashes.
+
+**2. Side checkpoints on the grass.** The right (`x = 800..820`) and left (`x = 180..200`) checkpoints lay on the grass next to the narrowed lanes. A brute-force search counted how many collision-free car positions can touch each checkpoint:
+
+| Track | Positions per checkpoint |
+|---|---|
+| Classic Oval | 49, 67, 49, 58 |
+| Tall Oval | 49, 69, 49, 69 |
+| Asymmetric Oval | 49, 69, 49, 69 |
+| Unseen (original) | 69, **4**, 69, 69, **5**, 69 |
+
+With only 4–5 valid positions, a full lap was practically impossible for any policy.
+
+**Fix** (in both `evaluate_unseen_track.py` and `envs/track_geometry.py`):
+
+| | Before | After |
+|---|---|---|
+| Start | `(500, 600)` | `(500, 575)`: 34 px from the outer edge, like the training tracks (29–39 px) |
+| Right checkpoint | `Rect(800, 310, 20, 60)` | `Rect(725, 310, 20, 60)`: centre of the lane `x = 670..799` |
+| Left checkpoint | `Rect(180, 310, 20, 60)` | `Rect(255, 310, 20, 60)`: centre of the lane `x = 200..329` |
+
+Two tests now guard against regressions: no track may spawn the car in a collision, and every checkpoint on every track must be reachable from at least 40 positions. The corrected results are in [Unseen-Track Evaluation](#unseen-track-evaluation) and [Single-Track vs Multi-Track Generalization](#single-track-vs-multi-track-generalization).
 
 ## Tests
 
@@ -711,7 +738,7 @@ python -m pytest
 
 | Test file | What it checks |
 |---|---|
-| `tests/test_track_geometry.py` | Masks match rendered pixels; starts are on the road; the unseen-track copy is pixel-identical to `evaluate_unseen_track.py`; spawn collision (known issue, `xfail`) |
+| `tests/test_track_geometry.py` | Masks match rendered pixels; starts are on the road; no collision at spawn; every checkpoint reachable; the unseen-track copy matches `evaluate_unseen_track.py` |
 | `tests/test_env_car_parity.py` | `EnvCar` reproduces the original `Car` exactly, frame by frame |
 | `tests/test_racing_env.py` | Gymnasium checker, registration, spaces, return = scaled fitness, termination, truncation, seeding, track selection, action clipping, rendering, saved-champion laps |
 
@@ -738,6 +765,7 @@ Tests run headless (SDL dummy video driver). Tests that need a trained model (`*
 - [x] Multi-track training with maximin fitness
 - [x] Gymnasium environment (`AIRacing-v0`) with bit-for-bit parity tests
 - [x] Headless, vectorized sensors (2.6× faster than pixel reads)
+- [x] Corrected unseen-track evaluation: the multi-track model completes 8 laps without crashing
 
 ### Next: dedicated evaluation
 
@@ -759,7 +787,7 @@ Tests run headless (SDL dummy video driver). Tests that need a trained model (`*
 - [ ] Experiment with network size and fitness design
 - [x] Introduce a Gymnasium-style environment interface
 - [ ] Compare neuroevolution with reinforcement-learning approaches suited to continuous control
-- [ ] Fix the unseen-track spawn position and re-run its evaluations
+- [x] Fix the unseen-track start position and checkpoints, and re-run its evaluations
 
 ### Reinforcement learning: PyTorch and TensorFlow
 
