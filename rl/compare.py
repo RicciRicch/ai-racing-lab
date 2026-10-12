@@ -1,7 +1,7 @@
 """Evaluate several models on every track and write a Markdown table.
 
-Arguments are model files (.npz, .pt) or run-group prefixes. A prefix
-such as ``torch_multi`` evaluates runs/torch_multi_seed*/best.pt and
+Arguments are model files (.npz, .pt, .keras) or run-group prefixes. A
+prefix such as ``torch_multi`` evaluates runs/torch_multi_seed*/best.* and
 reports the mean over seeds plus every seed separately.
 
     python -m rl.compare best_brain_multitrack.npz torch_multi --output results/rl/table.md
@@ -20,7 +20,7 @@ def expand(name, runs_dir):
     if os.path.isfile(name):
         return [(os.path.basename(name), [name])]
 
-    paths = sorted(glob.glob(os.path.join(runs_dir, name + "_seed*", "best.pt")))
+    paths = sorted(glob.glob(os.path.join(runs_dir, name + "_seed*", "best.*")))
 
     if not paths:
         raise FileNotFoundError(f"No model file or runs for {name!r}")

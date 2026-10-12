@@ -1,8 +1,8 @@
 """Evaluate any saved policy in RacingEnv with the same metrics.
 
-Supports neuroevolution brains (.npz) and PyTorch agents (.pt). Every
-policy is evaluated on the same tracks with the same seeds, so results
-are directly comparable.
+Supports neuroevolution brains (.npz), PyTorch agents (.pt) and
+TensorFlow agents (.keras). Every policy is evaluated on the same
+tracks with the same seeds, so results are directly comparable.
 
     python -m rl.evaluate best_brain_multitrack.npz --tracks all
     python -m rl.evaluate runs/torch_multi/best.pt --tracks all --episodes 10
@@ -30,6 +30,11 @@ def load_policy(path):
         from rl.ppo_torch import TorchPPOAgent
 
         return TorchPPOAgent.load(path).as_policy()
+
+    if path.endswith(".keras"):
+        from rl.ppo_tf import TFPPOAgent
+
+        return TFPPOAgent.load(path).as_policy()
 
     raise ValueError(f"Unknown model type: {path}")
 

@@ -6,6 +6,7 @@ truncated episodes, advantages, minibatches, evaluation, checkpoints
 and logs - is identical for every framework.
 
     python -m rl.trainer --framework torch --tracks train --run-name torch_multi
+    python -m rl.trainer --framework tf --tracks train --run-name tf_multi
 """
 
 import argparse
@@ -38,11 +39,27 @@ def make_agent(framework, config):
 
         return TorchPPOAgent(config)
 
+    if framework == "tf":
+        import tensorflow as tf
+
+        from rl.ppo_tf import TFPPOAgent
+
+        # Same reasoning as for PyTorch. Thread pools can only be set
+        # before TensorFlow runs its first operation.
+        try:
+            tf.config.threading.set_intra_op_parallelism_threads(1)
+            tf.config.threading.set_inter_op_parallelism_threads(1)
+        except RuntimeError:
+            pass
+
+        return TFPPOAgent(config)
+
     raise ValueError(f"Unknown framework: {framework}")
 
 
 MODEL_EXTENSIONS = {
     "pytorch": ".pt",
+    "tensorflow": ".keras",
 }
 
 
@@ -270,7 +287,7 @@ def _mean(values):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Train a PPO agent.")
-    parser.add_argument("--framework", choices=["torch"], default="torch")
+    parser.add_argument("--framework", choices=["torch", "tf"], default="torch")
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--runs-dir", default="runs")
 
