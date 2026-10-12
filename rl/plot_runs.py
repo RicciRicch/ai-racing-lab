@@ -33,6 +33,34 @@ def read_eval(path):
     return steps
 
 
+def common_steps(runs):
+    """Evaluation steps shared by all runs, or a common grid.
+
+    PPO evaluates at fixed step counts, so its seeds share every step.
+    Neuroevolution evaluates once per generation, and a generation's
+    step count depends on when cars crash, so its seeds do not. Then
+    the union of all steps inside the range covered by every run is
+    used, and each run is read with its last evaluation at or before
+    a step.
+    """
+    shared = sorted(set.intersection(*(set(run) for run in runs)))
+
+    if len(shared) * 2 >= min(len(run) for run in runs):
+        return shared
+
+    start = max(min(run) for run in runs)
+    end = min(max(run) for run in runs)
+
+    return sorted({
+        step for run in runs for step in run if start <= step <= end
+    })
+
+
+def value_at(run, step):
+    """Row dict of the last evaluation at or before ``step``."""
+    return run[max(s for s in run if s <= step)]
+
+
 def group_curves(runs_dir, prefix, metric):
     """Steps and per-seed arrays for worst-track and per-track metric."""
     paths = sorted(glob.glob(os.path.join(runs_dir, prefix + "_seed*", "eval.csv")))
@@ -41,12 +69,12 @@ def group_curves(runs_dir, prefix, metric):
         raise FileNotFoundError(f"No runs found for {prefix!r} in {runs_dir}")
 
     runs = [read_eval(path) for path in paths]
-    steps = sorted(set.intersection(*(set(run) for run in runs)))
-    tracks = list(runs[0][steps[0]])
+    steps = common_steps(runs)
+    tracks = list(value_at(runs[0], steps[0]))
 
     per_track = {
         track: np.array([
-            [float(run[step][track][metric]) for step in steps]
+            [float(value_at(run, step)[track][metric]) for step in steps]
             for run in runs
         ])
         for track in tracks
@@ -58,17 +86,18 @@ def group_curves(runs_dir, prefix, metric):
 
 
 def wall_clock(runs_dir, prefix, steps):
-    """Per-seed training time (s) at each evaluation step."""
+    """Per-seed training time (s) at each step, interpolated."""
     paths = sorted(glob.glob(os.path.join(runs_dir, prefix + "_seed*", "progress.csv")))
     times = []
 
     for path in paths:
         with open(path, newline="") as file:
-            by_step = {
-                int(row["global_step"]): float(row["time"])
-                for row in csv.DictReader(file)
-            }
-        times.append([by_step[step] for step in steps])
+            rows = list(csv.DictReader(file))
+
+        logged_steps = [int(row["global_step"]) for row in rows]
+        logged_times = [float(row["time"]) for row in rows]
+
+        times.append(np.interp(steps, logged_steps, logged_times))
 
     return np.array(times)
 

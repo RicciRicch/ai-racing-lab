@@ -12,6 +12,8 @@ A **PPO agent in PyTorch** is trained in that environment. On the original track
 
 The same PPO agent is also implemented in **TensorFlow / Keras**. Tests show that both implementations compute identical gradients, and both learn identically. They differ mainly in speed profile. See [PPO in TensorFlow and framework comparison](#ppo-in-tensorflow-and-framework-comparison).
 
+Finally, all three approaches are compared from scratch under equal conditions. PPO needs 4.6× fewer simulation steps on a single track, while neuroevolution is just as fast in wall-clock time. On three tracks, neuroevolution's exploration produced the only model that laps all of them. See [Final comparison: neuroevolution vs PPO](#final-comparison-neuroevolution-vs-ppo).
+
 ## Contents
 
 - [Features](#features)
@@ -30,6 +32,7 @@ The same PPO agent is also implemented in **TensorFlow / Keras**. Tests show tha
 - [Reinforcement-learning environment](#reinforcement-learning-environment)
 - [PPO agent in PyTorch](#ppo-agent-in-pytorch)
 - [PPO in TensorFlow and framework comparison](#ppo-in-tensorflow-and-framework-comparison)
+- [Final comparison: neuroevolution vs PPO](#final-comparison-neuroevolution-vs-ppo)
 - [Tests](#tests)
 - [Roadmap](#roadmap)
 
@@ -54,6 +57,7 @@ The same PPO agent is also implemented in **TensorFlow / Keras**. Tests show tha
 - PPO agent in PyTorch with shared, framework-independent training and evaluation code
 - The same PPO agent in TensorFlow / Keras 3, with tests proving gradient-level equivalence
 - Framework benchmark: sample efficiency, wall-clock time and per-operation cost
+- Headless neuroevolution with exact step counting and an automated three-way comparison report
 - Multi-seed experiments, learning curves and comparison tables against neuroevolution
 - Pytest test suite
 
@@ -396,6 +400,9 @@ ai-racing-lab/
 │   ├── ppo_torch.py       PyTorch actor-critic agent
 │   ├── ppo_tf.py          TensorFlow / Keras actor-critic agent
 │   ├── benchmark_frameworks.py  per-operation framework timing
+│   ├── neuroevolution.py  headless NE (main.py's algorithm) with step counting
+│   ├── report.py          final NE / PyTorch / TensorFlow comparison
+│   ├── plot_trajectories.py  driven paths of saved models on every track
 │   ├── evaluate.py        one evaluator for every model type
 │   ├── compare.py         multi-model Markdown comparison tables
 │   └── plot_runs.py       learning curves across seeds
@@ -842,7 +849,7 @@ Three seeds per configuration, 1,000,000 environment steps each. The table shows
 **Findings**
 
 - **Single-track PPO matches neuroevolution.** All seeds complete 10 laps on the Classic Oval without crashing.
-- **PPO is far more sample-efficient.** It reached 9 laps after about 41,000 steps, about 10 seconds of training. The NE champion first reached 9 laps in generation 3, after at most 216,000 simulated car-frames.
+- **PPO is far more sample-efficient.** It reached 9 laps after about 41,000 steps, about 10 seconds of training. The NE champion first reached 9 laps in generation 3, after at most 216,000 simulated car-frames. Phase 4 measured this exactly: 189,000 steps.
 - **Multi-track PPO specializes,** like NE with average fitness: uniform sampling maximizes the average return. Two seeds still lap the unseen track **9 times**, more than the NE champion's 8.
 - **Weakest-track sampling** is the RL counterpart of maximin fitness. It produced the first model that laps two training tracks (Classic and Tall), but it did not raise the worst-track score.
 - **The Asymmetric Oval is a shared bottleneck.** No NE or PPO model laps it. Its left checkpoint sits near the outer edge of a wide lane, while fast policies take the inner line.
@@ -919,6 +926,68 @@ Identical configuration and seeds (3 per framework, 1M steps each). Mean laps ov
 - **Different performance profiles.** TensorFlow compiles the whole PPO update into one graph and optimizes 1.6× faster. Each `tf.function` call, however, costs about 0.5 ms. During evaluation, the policy is called 265,000 times on single observations, which makes complete TensorFlow runs 13–19% slower.
 - **Multi-track training is sensitive to the seed** in both frameworks: one of three seeds yields a policy that crashes on most tracks.
 
+## Final comparison: neuroevolution vs PPO
+
+Phase 4 compares all three approaches on equal terms. Full generated report: [`results/rl/final_comparison.md`](results/rl/final_comparison.md).
+
+### Making neuroevolution measurable
+
+`main.py` trains in real time in a window and does not count simulation steps, so earlier comparisons could only bound NE's sample cost from above. `rl/neuroevolution.py` runs **the same algorithm headlessly**: the same population, maximin fitness, elitism, crossover, adaptive mutation and immigrants. It runs on the RL environment's track geometry, counts every simulated car step and writes the same logs as the PPO trainer. A test checks that a candidate drives exactly like the original `Car`.
+
+```sh
+python -m rl.neuroevolution --tracks train --seed 0 --total-timesteps 5000000 --run-name ne_multi_seed0
+python -m rl.report --output results/rl/final_comparison.md
+python -m rl.plot_trajectories runs/ne_multi_seed1/best.npz runs/torch_multi_seed0/best.pt --output results/rl/trajectories.png
+```
+
+| Setting | Value |
+|---|---|
+| Methods | Neuroevolution (NumPy), PPO (PyTorch), PPO (TensorFlow) |
+| Starting point | Random initialization for all methods (no seed model) |
+| Seeds | 3 per method and scenario |
+| Budget | NE: 5M steps; PPO: 1M steps, plus PyTorch PPO with 5M steps for multi-track |
+| Evaluation | Best model per seed, 4 tracks × 10 episodes, same seeds, deterministic actions |
+
+### Single-track (Classic Oval)
+
+| Method | Classic Oval laps | Steps to 9 laps (median) | Time to 9 laps | Simulation steps/s |
+|---|---:|---:|---:|---:|
+| Neuroevolution | 9.5 | 189k | 17 s | 11,173 |
+| PPO (PyTorch) | 9.9 | **41k** | 17 s | 1,958 |
+| PPO (TensorFlow) | 9.9 | **41k** | 18 s | 1,728 |
+
+![Single-track comparison](results/rl/final_single.png)
+
+**PPO needs 4.6× fewer simulation steps; neuroevolution needs no fewer seconds.** An NE step only runs a 74-parameter network forward in NumPy, while a PPO step also pays for batched inference, gradient updates and framework overhead, so NE simulates about 6× more steps per second. When simulation is cheap, as here, sample efficiency does not translate into faster training. With an expensive simulator or a real robot, PPO's advantage would dominate.
+
+### Multi-track (Classic, Tall, Asymmetric)
+
+| Method | Budget | Classic | Tall | Asymmetric | Unseen | Worst training-track fitness, mean (min–max) |
+|---|---:|---:|---:|---:|---:|---:|
+| Neuroevolution | 5M | 1.8 | 5.7 | **2.7** | 4.2 | **9,747** (313–26,290) |
+| PPO (PyTorch) | 1M | 1.1 | 4.2 | 0.0 | 6.3 | 1,823 (1,233–2,531) |
+| PPO (TensorFlow) | 1M | 0.0 | 6.0 | 0.0 | 6.0 | 2,049 (1,175–2,491) |
+| PPO (PyTorch) | 5M | 0.1 | 7.8 | 0.0 | 6.0 | 2,467 (2,389–2,592) |
+
+Mean laps over 3 seeds. Only **one NE seed** reached the target of worst-track fitness ≥ 10,000, which requires laps on all three tracks. It did so after 3.57M steps and is the **first model in the project that laps all three training tracks**, including the Asymmetric Oval. No PPO run reached it, not even with the same 5M-step budget.
+
+![Multi-track comparison](results/rl/final_multi.png)
+
+The trajectories show why:
+
+![Trajectories of the best multi-track models](results/rl/trajectories.png)
+
+On the Asymmetric Oval, the left checkpoint sits near the outer edge of a wide lane. The NE champion (yellow) swings wide to the left and reaches it. Both PPO agents drive tight, regular ellipses that pass inside it. They never crash, but they never earn the checkpoint either.
+
+### Conclusions
+
+1. **Same algorithm, same results across frameworks.** PyTorch and TensorFlow PPO compute identical gradients, reach the target at the same step on every seed, and differ only in speed profile. TensorFlow optimizes faster with compiled graphs; PyTorch has much lower per-call overhead.
+2. **PPO is the more sample-efficient learner.** It reaches 9 laps with 4.6× fewer steps on a single track.
+3. **Neuroevolution is the more efficient learner per CPU second here.** Its steps are about 6× cheaper, so wall-clock time is equal on a single track.
+4. **Exploration decides the multi-track problem.** PPO improves its policy through small, local gradient steps around a smooth, well-behaved driving line. That line never reaches the Asymmetric Oval's outer-left checkpoint, so there is no reward signal to follow. Neuroevolution's random immigrants and large mutations occasionally produce a qualitatively different line, and maximin selection keeps it. The flip side is high variance: one NE seed of three succeeded.
+5. **Generalization to the unseen track is comparable.** The best PPO models lap the unseen track 9–10 times and the best NE models 9 (new seed 2) or 8 (the `main.py` champion). Seed-to-seed variation is larger than the differences between methods.
+6. **Measurement mattered as much as the methods.** Track defects, a confounded crash rate, an Adam epsilon mismatch and a misleading report target each changed the conclusions until they were found and fixed. Each fix is recorded in the Git history and the result files.
+
 ## Tests
 
 ```sh
@@ -935,6 +1004,8 @@ python -m pytest
 | `tests/test_framework_equivalence.py` | PyTorch and TensorFlow agents with copied weights: identical outputs, losses and gradients; close Adam updates |
 | `tests/test_trainer.py` | For both frameworks: logs and checkpoints of a short run, LR annealing, identical results for identical seeds, CLI |
 | `tests/test_rl_evaluate.py`, `tests/test_rl_compare.py` | Shared evaluation and comparison tables |
+| `tests/test_neuroevolution.py` | Headless NE: settings equal `main.py`, exact step counting, candidates drive like the original `Car`, elitism, logs, seeding |
+| `tests/test_report.py` | Report targets, totals, formatting and alignment of learning curves with different step grids |
 
 Tests run headless (SDL dummy video driver). PyTorch and TensorFlow tests are skipped when the framework is not installed. Tests that need a trained model (`*.npz`, not tracked by Git) are skipped automatically when the file is missing.
 
@@ -962,17 +1033,18 @@ Tests run headless (SDL dummy video driver). PyTorch and TensorFlow tests are sk
 - [x] Corrected unseen-track evaluation: the multi-track model completes 8 laps without crashing
 - [x] PPO in PyTorch with multi-seed experiments and weakest-track sampling
 - [x] PPO in TensorFlow with gradient-level equivalence tests and a framework benchmark
+- [x] Headless neuroevolution with exact step counts and a three-way comparison report
 
 ### Next: dedicated evaluation
 
 - [x] Create a separate model evaluation script
 - [x] Evaluate saved champions over repeated episodes
 - [ ] Report average and best lap times
-- [ ] Report crash rate and checkpoints reached before crashing
+- [x] Report crash rate and checkpoints reached before crashing
 - [ ] Report average throttle and absolute steering magnitude
-- [ ] Report average speed and laps within a fixed frame budget
+- [x] Report average speed and laps within a fixed frame budget
 - [ ] Compare discrete and continuous policies under matched conditions
-- [ ] Record experiment settings, seeds, and results together
+- [x] Record experiment settings, seeds, and results together
 
 ### Environment and training improvements
 
@@ -982,7 +1054,7 @@ Tests run headless (SDL dummy video driver). PyTorch and TensorFlow tests are sk
 - [x] Support headless and accelerated training (`envs/`)
 - [ ] Experiment with network size and fitness design
 - [x] Introduce a Gymnasium-style environment interface
-- [ ] Compare neuroevolution with reinforcement-learning approaches suited to continuous control
+- [x] Compare neuroevolution with reinforcement-learning approaches suited to continuous control
 - [x] Fix the unseen-track start position and checkpoints, and re-run its evaluations
 
 ### Reinforcement learning: PyTorch and TensorFlow
@@ -990,7 +1062,15 @@ Tests run headless (SDL dummy video driver). PyTorch and TensorFlow tests are sk
 - [x] **Phase 1:** Gymnasium environment on top of the existing simulation
 - [x] **Phase 2:** PPO agent in PyTorch, trained on one and on several tracks
 - [x] **Phase 3:** The same PPO agent in TensorFlow / Keras
-- [ ] **Phase 4:** Common evaluation of neuroevolution, PyTorch PPO and TensorFlow PPO: training-track performance, unseen-track generalization, sample efficiency and training time
+- [x] **Phase 4:** Common evaluation of neuroevolution, PyTorch PPO and TensorFlow PPO: training-track performance, unseen-track generalization, sample efficiency and training time
+
+### Possible next steps
+
+- [ ] Exploration for PPO: entropy bonus, state-dependent noise or a curriculum, to find racing lines like the NE champion's
+- [ ] Full-width checkpoint gates, so lap counts no longer depend on one racing line
+- [ ] More NE seeds to measure how often the all-track solution appears
+- [ ] Batched evaluation to remove TensorFlow's per-call overhead
+- [ ] Hybrid: use an evolved policy to initialize PPO
 
 ## Long-term goal
 
