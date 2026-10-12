@@ -3,7 +3,23 @@ import csv
 import numpy as np
 import pytest
 
-pytest.importorskip("torch")
+
+
+def framework_param(framework, module):
+    try:
+        __import__(module)
+        marks = ()
+    except ImportError:
+        marks = pytest.mark.skip(reason=f"{module} not installed")
+    return pytest.param(framework, marks=marks, id=framework)
+
+
+FRAMEWORKS = [
+    framework_param("torch", "torch"),
+    framework_param("tf", "tensorflow"),
+]
+
+EXTENSIONS = {"torch": ".pt", "tf": ".keras"}
 
 from rl.common import PPOConfig
 from rl.evaluate import load_policy
@@ -31,9 +47,10 @@ def read_csv(path):
         return list(csv.DictReader(file))
 
 
-def test_training_run_writes_logs_and_checkpoints(tmp_path):
+@pytest.mark.parametrize("framework", FRAMEWORKS)
+def test_training_run_writes_logs_and_checkpoints(tmp_path, framework):
     config = tiny_config()
-    agent = make_agent("torch", config)
+    agent = make_agent(framework, config)
 
     best = train(agent, config, str(tmp_path), log=lambda message: None)
 
@@ -49,14 +66,15 @@ def test_training_run_writes_logs_and_checkpoints(tmp_path):
 
     assert PPOConfig.load(tmp_path / "config.json") == config
 
-    for name in ("best.pt", "final.pt"):
-        policy = load_policy(str(tmp_path / name))
+    for name in ("best", "final"):
+        policy = load_policy(str(tmp_path / (name + EXTENSIONS[framework])))
         assert policy(np.zeros(6, np.float32)).shape == (2,)
 
 
-def test_learning_rate_is_annealed(tmp_path):
+@pytest.mark.parametrize("framework", FRAMEWORKS)
+def test_learning_rate_is_annealed(tmp_path, framework):
     config = tiny_config(eval_interval=100)
-    train(make_agent("torch", config), config, str(tmp_path), log=lambda m: None)
+    train(make_agent(framework, config), config, str(tmp_path), log=lambda m: None)
 
     rates = [float(r["learning_rate"]) for r in read_csv(tmp_path / "progress.csv")]
 
@@ -64,12 +82,13 @@ def test_learning_rate_is_annealed(tmp_path):
     assert rates == sorted(rates, reverse=True)
 
 
-def test_same_seed_gives_same_training(tmp_path):
+@pytest.mark.parametrize("framework", FRAMEWORKS)
+def test_same_seed_gives_same_training(tmp_path, framework):
     results = []
 
     for run in ("a", "b"):
         config = tiny_config(eval_interval=100)
-        train(make_agent("torch", config), config, str(tmp_path / run),
+        train(make_agent(framework, config), config, str(tmp_path / run),
               log=lambda m: None)
         results.append(read_csv(tmp_path / run / "progress.csv"))
 
@@ -78,7 +97,19 @@ def test_same_seed_gives_same_training(tmp_path):
         [[r[k] for k in keys] for r in results[1]]
 
 
-def test_cli_maps_options_to_config(tmp_path):
+@pytest.mark.parametrize("framework", FRAMEWORKS)
+def test_cli_trains_with_each_framework(tmp_path, framework):
+    main([
+        "--framework", framework,
+        "--runs-dir", str(tmp_path), "--run-name", "cli",
+        "--num-envs", "2", "--num-steps", "16", "--total-timesteps", "64",
+        "--max-steps", "20", "--eval-episodes", "1",
+    ])
+
+    assert (tmp_path / "cli" / ("final" + EXTENSIONS[framework])).exists()
+
+
+def test_cli_maps_options_to_config():
     args = parse_args([
         "--tracks", "train:1", "--total-timesteps", "128",
         "--anneal-lr", "false", "--learning-rate", "0.001",
@@ -89,10 +120,3 @@ def test_cli_maps_options_to_config(tmp_path):
     assert args.anneal_lr is False
     assert args.learning_rate == 0.001
 
-    main([
-        "--runs-dir", str(tmp_path), "--run-name", "cli",
-        "--num-envs", "2", "--num-steps", "16", "--total-timesteps", "64",
-        "--max-steps", "20", "--eval-episodes", "1",
-    ])
-
-    assert (tmp_path / "cli" / "final.pt").exists()

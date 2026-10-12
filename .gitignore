@@ -10,3 +10,4 @@ training_history*.csv
 # RL training runs and checkpoints
 runs/
 *.pt
+*.keras

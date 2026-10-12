@@ -10,6 +10,8 @@ The simulation is now also exposed as a **Gymnasium environment** (`AIRacing-v0`
 
 A **PPO agent in PyTorch** is trained in that environment. On the original track it matches the neuroevolution champion (10 laps) after a fraction of the simulation steps. See [PPO agent in PyTorch](#ppo-agent-in-pytorch).
 
+The same PPO agent is also implemented in **TensorFlow / Keras**. Tests show that both implementations compute identical gradients, and both learn identically. They differ mainly in speed profile. See [PPO in TensorFlow and framework comparison](#ppo-in-tensorflow-and-framework-comparison).
+
 ## Contents
 
 - [Features](#features)
@@ -27,6 +29,7 @@ A **PPO agent in PyTorch** is trained in that environment. On the original track
 - [Development findings](#development-findings)
 - [Reinforcement-learning environment](#reinforcement-learning-environment)
 - [PPO agent in PyTorch](#ppo-agent-in-pytorch)
+- [PPO in TensorFlow and framework comparison](#ppo-in-tensorflow-and-framework-comparison)
 - [Tests](#tests)
 - [Roadmap](#roadmap)
 
@@ -49,6 +52,8 @@ A **PPO agent in PyTorch** is trained in that environment. On the original track
 - Gymnasium environment (`AIRacing-v0`) with headless, NumPy-based sensors
 - Bit-for-bit parity between the RL environment and the original simulation, enforced by tests
 - PPO agent in PyTorch with shared, framework-independent training and evaluation code
+- The same PPO agent in TensorFlow / Keras 3, with tests proving gradient-level equivalence
+- Framework benchmark: sample efficiency, wall-clock time and per-operation cost
 - Multi-seed experiments, learning curves and comparison tables against neuroevolution
 - Pytest test suite
 
@@ -122,6 +127,7 @@ python -m pip install -r requirements-dev.txt
 | `requirements-rl.txt` | The above plus Gymnasium |
 | `requirements-dev.txt` | The above plus pytest |
 | `requirements-torch.txt` | `requirements-rl.txt` plus PyTorch |
+| `requirements-tf.txt` | `requirements-rl.txt` plus TensorFlow |
 
 ## Controls and operating modes
 
@@ -388,6 +394,8 @@ ai-racing-lab/
 │   ├── common.py          PPOConfig, VecEnv, buffer, GAE, track sampler
 │   ├── trainer.py         framework-independent PPO loop and CLI
 │   ├── ppo_torch.py       PyTorch actor-critic agent
+│   ├── ppo_tf.py          TensorFlow / Keras actor-critic agent
+│   ├── benchmark_frameworks.py  per-operation framework timing
 │   ├── evaluate.py        one evaluator for every model type
 │   ├── compare.py         multi-model Markdown comparison tables
 │   └── plot_runs.py       learning curves across seeds
@@ -399,8 +407,9 @@ ai-racing-lab/
 ├── requirements.txt
 │   Neuroevolution dependencies.
 │
-├── requirements-rl.txt / requirements-dev.txt / requirements-torch.txt
-│   Extra dependencies for RL, tests and PyTorch.
+├── requirements-rl.txt / requirements-dev.txt
+│   requirements-torch.txt / requirements-tf.txt
+│   Extra dependencies for RL, tests, PyTorch and TensorFlow.
 │
 ├── pytest.ini
 │   Test discovery settings.
@@ -616,7 +625,7 @@ car.py ────► EnvCar(Car) ◄───────────┘   ext
                  │
      ┌───────────┼──────────────┐
   BrainPolicy  PyTorch agent  TensorFlow agent
-  (neuroevo)   (phase 2)      (planned)
+  (neuroevo)   (phase 2)      (phase 3)
 ```
 
 | Module | Responsibility |
@@ -767,7 +776,7 @@ The PPO implementation is split so that only the neural-network code depends on 
                                │  act · value · predict · train_step · save
                 ┌──────────────┴──────────────┐
         rl/ppo_torch.py                 rl/ppo_tf.py
-        PyTorch actor-critic            (phase 3)
+        PyTorch actor-critic            TensorFlow actor-critic
 ```
 
 | Component | Choice |
@@ -778,7 +787,7 @@ The PPO implementation is split so that only the neural-network code depends on 
 | Advantages | GAE (γ = 0.99, λ = 0.95), normalized per minibatch |
 | Time limits | Truncated episodes are bootstrapped with γ · V(final observation) instead of being treated as crashes |
 | Rollouts | 8 environments × 256 steps = 2,048 steps per update; 10 epochs × 8 minibatches |
-| Learning rate | Adam 3e-4, linearly annealed to zero |
+| Learning rate | Adam 3e-4, linearly annealed to zero; ε = 1e-8 (see [Adam's epsilon](#proving-both-implementations-are-the-same-algorithm)) |
 | Model selection | `best.pt` = highest **worst-track** evaluation fitness (maximin, like multi-track NE) |
 | Threads | One CPU thread: faster for a network this small, and reproducible across machines |
 
@@ -818,7 +827,7 @@ All models, NE and PPO, are evaluated by the same code on the same tracks with t
 
 ### Results
 
-Three seeds per configuration, 1,000,000 environment steps each. The table shows mean laps over 10 evaluation episodes per track (per-seed details in [`results/rl/torch_ppo_evaluation.md`](results/rl/torch_ppo_evaluation.md)):
+Three seeds per configuration, 1,000,000 environment steps each. The table shows mean laps over 10 evaluation episodes per track (per-seed details in [`results/rl/torch_ppo_evaluation.md`](results/rl/torch_ppo_evaluation.md)). These phase 2 runs used Adam ε = 1e-5; the re-runs with the shared ε = 1e-8 are in [PPO in TensorFlow and framework comparison](#ppo-in-tensorflow-and-framework-comparison).
 
 | Model | Classic Oval | Tall Oval | Asymmetric Oval | Unseen Narrow Oval | Worst training-track fitness |
 |---|---:|---:|---:|---:|---:|
@@ -840,6 +849,76 @@ Three seeds per configuration, 1,000,000 environment steps each. The table shows
 
 A 1M-step run takes 6.5–8.5 minutes on a laptop CPU.
 
+## PPO in TensorFlow and framework comparison
+
+Phase 3 implements the same PPO agent in **TensorFlow / Keras 3** and compares it with the PyTorch version under identical conditions. Full write-up: [`results/rl/framework_comparison.md`](results/rl/framework_comparison.md).
+
+### The TensorFlow agent
+
+`rl/ppo_tf.py` mirrors `rl/ppo_torch.py` behind the same NumPy interface, so the trainer, evaluator and comparison tools work unchanged:
+
+| | PyTorch (`ppo_torch.py`) | TensorFlow (`ppo_tf.py`) |
+|---|---|---|
+| Model | `nn.Module` with two `nn.Sequential` MLPs | `keras.Model` with two `keras.Sequential` MLPs |
+| Initialization | `nn.init.orthogonal_` | `keras.initializers.Orthogonal` |
+| Execution | Eager | `tf.function` graphs with fixed input signatures |
+| Gradients | `loss.backward()` | `tf.GradientTape` |
+| Gradient clipping | `clip_grad_norm_` | `tf.clip_by_global_norm` |
+| Log-density | `torch.distributions.Normal` | Written out explicitly (no TensorFlow Probability) |
+| Action sampling | Global torch RNG | `tf.random.Generator` |
+| Checkpoint | `.pt` (state dict + config) | `.keras` (registered serializable model + config) |
+
+```sh
+python -m pip install -r requirements-tf.txt
+python -m rl.trainer --framework tf --tracks train --seed 0 --run-name tf_multi_seed0
+python -m rl.evaluate runs/tf_multi_seed0/best.keras --tracks all
+```
+
+TensorFlow 2.21 runs on Python 3.13. On native Windows it uses the CPU only, which is enough for this network. The agent imports Keras 3 directly (`import keras`), because `tensorflow.keras` points to a compatibility layer in TF 2.21.
+
+### Proving both implementations are the same algorithm
+
+`tests/test_framework_equivalence.py` copies a PyTorch agent's weights into a TensorFlow agent:
+
+| Check | Result |
+|---|---|
+| Actions, values, log-probabilities | Identical |
+| Policy loss, value loss, entropy | Identical |
+| Gradients (via one SGD step) | Weight changes differ by **9 × 10⁻⁷** |
+| 20 Adam steps | Weight changes differ by **1.2%** |
+
+**Adam's epsilon is not the same thing in both libraries.** PyTorch adds ε to the bias-corrected `√v̂`; Keras adds it to the uncorrected `√v`. With the common PPO setting `ε = 1e-5` in both, Keras' effective epsilon is `1/√(1 − β₂ᵗ)` times larger, **31.6× in the first step**, and a single update differed by about 59%. A shared `adam_epsilon = 1e-8` makes epsilon negligible in both formulations. The phase 2 PyTorch runs were trained with 1e-5, so they were re-run with the shared setting for this comparison.
+
+### Results
+
+Identical configuration and seeds (3 per framework, 1M steps each). Mean laps over 10 evaluation episodes per track; per-seed details in [`results/rl/framework_evaluation.md`](results/rl/framework_evaluation.md):
+
+| Model | Classic Oval | Tall Oval | Asymmetric Oval | Unseen Narrow Oval | Worst training-track fitness |
+|---|---:|---:|---:|---:|---:|
+| NE single-track | 10.0 | 0.0 | 0.0 | 0.0 | 252 |
+| PyTorch single-track | 9.9 | 0.0 | 0.0 | 0.0 | -17 |
+| TensorFlow single-track | 9.9 | 0.0 | 0.0 | 0.0 | 123 |
+| NE multi-track | 0.0 | 9.0 | 0.0 | 8.0 | **3,420** |
+| PyTorch multi-track | 1.1 | 4.2 | 0.0 | 6.3 | 2,098 |
+| TensorFlow multi-track | 0.0 | 6.0 | 0.0 | 6.0 | 2,049 |
+
+![PyTorch vs TensorFlow, single-track](results/rl/frameworks_single.png)
+
+| | PyTorch | TensorFlow |
+|---|---:|---:|
+| Steps to first 9-lap evaluation (single-track, every seed) | 40,960 | 40,960 |
+| Single-track run, 1M steps | 511 s | 578 s |
+| Multi-track run, 1M steps (noisy, 6 runs in parallel) | 631 s | 753 s |
+| `train_step` on 256 samples | 4,236 µs | **2,729 µs** |
+| `predict` on 1 observation | **95 µs** | 637 µs |
+
+**Findings**
+
+- **Same learning.** Both frameworks reach 9 laps at exactly the same point on every seed, and their final results differ less from each other than seeds of one framework differ among themselves.
+- **Best single result so far:** `torch_multi_seed0` completes **10 laps on the unseen track** (fitness 66,446). Three more PPO models (two TensorFlow, one PyTorch) complete 9 laps there; the NE champion completes 8.
+- **Different performance profiles.** TensorFlow compiles the whole PPO update into one graph and optimizes 1.6× faster. Each `tf.function` call, however, costs about 0.5 ms. During evaluation, the policy is called 265,000 times on single observations, which makes complete TensorFlow runs 13–19% slower.
+- **Multi-track training is sensitive to the seed** in both frameworks: one of three seeds yields a policy that crashes on most tracks.
+
 ## Tests
 
 ```sh
@@ -852,11 +931,12 @@ python -m pytest
 | `tests/test_env_car_parity.py` | `EnvCar` reproduces the original `Car` exactly, frame by frame |
 | `tests/test_racing_env.py` | Gymnasium checker, registration, spaces, return = scaled fitness, termination, truncation, seeding, track selection, action clipping, rendering, saved-champion laps |
 | `tests/test_rl_common.py` | GAE against its definition, VecEnv autoreset and returns, weakest-track sampler, buffers, config |
-| `tests/test_ppo_torch.py` | Log-probabilities, seeding, policy and value updates, save/load |
-| `tests/test_trainer.py` | Logs and checkpoints of a short run, LR annealing, identical results for identical seeds, CLI |
+| `tests/test_ppo_torch.py`, `tests/test_ppo_tf.py` | The same checks for both agents: log-probabilities, seeding, policy and value updates, save/load |
+| `tests/test_framework_equivalence.py` | PyTorch and TensorFlow agents with copied weights: identical outputs, losses and gradients; close Adam updates |
+| `tests/test_trainer.py` | For both frameworks: logs and checkpoints of a short run, LR annealing, identical results for identical seeds, CLI |
 | `tests/test_rl_evaluate.py`, `tests/test_rl_compare.py` | Shared evaluation and comparison tables |
 
-Tests run headless (SDL dummy video driver). PyTorch tests are skipped when PyTorch is not installed. Tests that need a trained model (`*.npz`, not tracked by Git) are skipped automatically when the file is missing.
+Tests run headless (SDL dummy video driver). PyTorch and TensorFlow tests are skipped when the framework is not installed. Tests that need a trained model (`*.npz`, not tracked by Git) are skipped automatically when the file is missing.
 
 ## Roadmap
 
@@ -881,6 +961,7 @@ Tests run headless (SDL dummy video driver). PyTorch tests are skipped when PyTo
 - [x] Headless, vectorized sensors (2.6× faster than pixel reads)
 - [x] Corrected unseen-track evaluation: the multi-track model completes 8 laps without crashing
 - [x] PPO in PyTorch with multi-seed experiments and weakest-track sampling
+- [x] PPO in TensorFlow with gradient-level equivalence tests and a framework benchmark
 
 ### Next: dedicated evaluation
 
@@ -908,7 +989,7 @@ Tests run headless (SDL dummy video driver). PyTorch tests are skipped when PyTo
 
 - [x] **Phase 1:** Gymnasium environment on top of the existing simulation
 - [x] **Phase 2:** PPO agent in PyTorch, trained on one and on several tracks
-- [ ] **Phase 3:** The same PPO agent in TensorFlow / Keras
+- [x] **Phase 3:** The same PPO agent in TensorFlow / Keras
 - [ ] **Phase 4:** Common evaluation of neuroevolution, PyTorch PPO and TensorFlow PPO: training-track performance, unseen-track generalization, sample efficiency and training time
 
 ## Long-term goal

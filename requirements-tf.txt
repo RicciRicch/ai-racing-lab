@@ -1,0 +1,5 @@
+# TensorFlow agent (phase 3). TensorFlow on native Windows runs on the CPU,
+# which is enough for this small network.
+#   python -m pip install -r requirements-tf.txt
+-r requirements-rl.txt
+tensorflow>=2.16
